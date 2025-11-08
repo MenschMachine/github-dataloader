@@ -507,8 +507,7 @@ def main():
 
     # R2 credentials only required if not in local-only mode
     if not args.local_only:
-        if not r2_access_key:
-            missing_vars.append('R2_ACCESS_KEY_ID')
+        # R2_ACCESS_KEY_ID validation skipped - will use R2_SECRET_ACCESS_KEY as credential
         if not r2_secret_key:
             missing_vars.append('R2_SECRET_ACCESS_KEY')
         if not r2_account_id:
@@ -549,7 +548,9 @@ def main():
 
     uploader = None
     if not args.local_only:
-        uploader = CloudflareR2Uploader(r2_access_key, r2_secret_key,
+        # Use r2_secret_key as access_key if r2_access_key is not provided
+        access_key = r2_access_key if r2_access_key else r2_secret_key
+        uploader = CloudflareR2Uploader(access_key, r2_secret_key,
                                          r2_account_id, r2_bucket_name)
     state_manager = StateManager()
 
