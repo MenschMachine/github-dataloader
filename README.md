@@ -7,10 +7,11 @@ A Python script that downloads GitHub Actions workflow data from your repositori
 - Download workflow runs, jobs, and artifacts from GitHub Actions
 - Incremental fetching (only new data since last run)
 - Automatic retry logic with exponential backoff
-- Configurable repository list
+- Configurable repository list with glob pattern support
 - Saves data locally before uploading
 - Optional upload to Cloudflare R2 bucket
 - Local-only mode for downloading without cloud upload
+- Automatic time-based aggregations (daily, weekly, monthly, yearly)
 
 ## Prerequisites
 
@@ -41,6 +42,49 @@ cp config.example.json config.json
 ```
 
 ## Configuration
+
+### Repository Patterns
+
+The `repositories` field in `config.json` supports both exact repository names and glob patterns:
+
+**Exact repository names:**
+```json
+{
+  "repositories": [
+    "myorg/backend-api",
+    "myorg/frontend-web"
+  ]
+}
+```
+
+**Glob patterns:**
+```json
+{
+  "repositories": [
+    "myorg/backend-*",
+    "myorg/*-service",
+    "myorg/app-*-prod"
+  ]
+}
+```
+
+**Mixed (exact names and patterns):**
+```json
+{
+  "repositories": [
+    "myorg/critical-app",
+    "myorg/backend-*",
+    "myorg/*-service"
+  ]
+}
+```
+
+Glob pattern syntax:
+- `*` - Matches any characters (e.g., `myorg/app-*` matches `myorg/app-web`, `myorg/app-api`)
+- `?` - Matches a single character (e.g., `myorg/app-?` matches `myorg/app-1`, `myorg/app-a`)
+- `[abc]` - Matches any character in brackets (e.g., `myorg/app-[123]` matches `myorg/app-1`, `myorg/app-2`, `myorg/app-3`)
+
+The script will automatically fetch all repositories from the organization and match them against your patterns.
 
 ### Environment Variables
 

@@ -15,6 +15,7 @@ import requests
 import boto3
 from pathlib import Path
 from dotenv import load_dotenv
+from fnmatch import fnmatch
 
 
 class GitHubActionsDownloader:
@@ -73,6 +74,20 @@ class GitHubActionsDownloader:
                     break
 
         return results
+
+    def get_org_repositories(self, org: str) -> List[str]:
+        """Fetch all repositories for an organization"""
+        print(f"Fetching repositories for organization: {org}")
+        url = f"{self.api_base}/orgs/{org}/repos"
+        params = {'per_page': 100, 'type': 'all'}
+
+        param_str = '&'.join([f"{k}={v}" for k, v in params.items()])
+        url = f"{url}?{param_str}"
+
+        repos = self._get_all_pages(url)
+        repo_names = [repo['full_name'] for repo in repos]
+        print(f"Found {len(repo_names)} repositories in {org}")
+        return repo_names
 
     def get_workflow_runs(self, repo: str, since: Optional[str] = None) -> List[Dict]:
         """Fetch workflow runs for a repository"""
@@ -245,6 +260,48 @@ def load_config(config_file: str = 'config.json') -> Dict:
         return json.load(f)
 
 
+def expand_repository_globs(patterns: List[str], downloader: GitHubActionsDownloader) -> List[str]:
+    """Expand glob patterns in repository list to actual repository names"""
+    expanded_repos = []
+    orgs_cache = {}  # Cache org repos to avoid multiple API calls
+
+    for pattern in patterns:
+        # Check if pattern contains wildcards
+        if '*' in pattern or '?' in pattern or '[' in pattern:
+            print(f"\nExpanding glob pattern: {pattern}")
+
+            # Extract org from pattern (everything before /)
+            if '/' not in pattern:
+                print(f"  Warning: Invalid pattern '{pattern}' - must be in format 'org/repo-pattern'")
+                continue
+
+            org = pattern.split('/')[0]
+
+            # Fetch org repos if not cached
+            if org not in orgs_cache:
+                try:
+                    orgs_cache[org] = downloader.get_org_repositories(org)
+                except Exception as e:
+                    print(f"  Error fetching repositories for org '{org}': {e}")
+                    continue
+
+            # Match repos against pattern
+            matched_repos = [repo for repo in orgs_cache[org] if fnmatch(repo, pattern)]
+
+            if matched_repos:
+                print(f"  Matched {len(matched_repos)} repositories:")
+                for repo in matched_repos:
+                    print(f"    - {repo}")
+                expanded_repos.extend(matched_repos)
+            else:
+                print(f"  Warning: No repositories matched pattern '{pattern}'")
+        else:
+            # Not a glob pattern, add as-is
+            expanded_repos.append(pattern)
+
+    return expanded_repos
+
+
 def create_aggregations(metadata: Dict, output_dir: Path) -> List[str]:
     """Create aggregation files grouped by day, week, month, and year"""
     from collections import defaultdict
@@ -394,16 +451,26 @@ def main():
 
     # Load configuration
     config = load_config()
-    repositories = config.get('repositories', [])
+    repository_patterns = config.get('repositories', [])
 
-    if not repositories:
+    if not repository_patterns:
         print("No repositories configured in config.json")
         sys.exit(1)
 
-    print(f"Configured repositories: {len(repositories)}")
+    print(f"Configured repository patterns: {len(repository_patterns)}")
 
     # Initialize components
     downloader = GitHubActionsDownloader(github_token)
+
+    # Expand glob patterns in repository list
+    repositories = expand_repository_globs(repository_patterns, downloader)
+
+    if not repositories:
+        print("\nError: No repositories found after expanding patterns")
+        sys.exit(1)
+
+    print(f"\nTotal repositories to process: {len(repositories)}")
+
     uploader = None
     if not args.local_only:
         uploader = CloudflareR2Uploader(r2_access_key, r2_secret_key,
