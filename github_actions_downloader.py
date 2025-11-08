@@ -296,6 +296,10 @@ def load_config(config_file: str = 'config.json') -> Dict:
             "repositories": [
                 "owner/repo1",
                 "owner/repo2"
+            ],
+            "exclude": [
+                "owner/*-test",
+                "owner/temp-*"
             ]
         }
         with open(config_file, 'w') as f:
@@ -307,7 +311,8 @@ def load_config(config_file: str = 'config.json') -> Dict:
         return json.load(f)
 
 
-def expand_repository_globs(patterns: List[str], downloader: GitHubActionsDownloader) -> List[str]:
+def expand_repository_globs(patterns: List[str], downloader: GitHubActionsDownloader,
+                           exclude_patterns: Optional[List[str]] = None) -> List[str]:
     """Expand glob patterns in repository list to actual repository names"""
     expanded_repos = []
     orgs_cache = {}  # Cache org repos to avoid multiple API calls
@@ -345,6 +350,27 @@ def expand_repository_globs(patterns: List[str], downloader: GitHubActionsDownlo
         else:
             # Not a glob pattern, add as-is
             expanded_repos.append(pattern)
+
+    # Apply exclusion patterns if provided
+    if exclude_patterns:
+        print(f"\nApplying {len(exclude_patterns)} exclusion pattern(s)...")
+        initial_count = len(expanded_repos)
+        excluded_repos = []
+
+        for exclude_pattern in exclude_patterns:
+            for repo in expanded_repos[:]:  # Use slice copy to allow modification during iteration
+                # Check if repo matches exclusion pattern (supports globs)
+                if fnmatch(repo, exclude_pattern):
+                    if repo in expanded_repos:
+                        expanded_repos.remove(repo)
+                        excluded_repos.append(repo)
+
+        if excluded_repos:
+            print(f"  Excluded {len(excluded_repos)} repositories:")
+            for repo in excluded_repos:
+                print(f"    - {repo}")
+        else:
+            print(f"  No repositories matched exclusion patterns")
 
     return expanded_repos
 
@@ -499,18 +525,21 @@ def main():
     # Load configuration
     config = load_config()
     repository_patterns = config.get('repositories', [])
+    exclude_patterns = config.get('exclude', [])
 
     if not repository_patterns:
         print("No repositories configured in config.json")
         sys.exit(1)
 
     print(f"Configured repository patterns: {len(repository_patterns)}")
+    if exclude_patterns:
+        print(f"Configured exclusion patterns: {len(exclude_patterns)}")
 
     # Initialize components
     downloader = GitHubActionsDownloader(github_token)
 
     # Expand glob patterns in repository list
-    repositories = expand_repository_globs(repository_patterns, downloader)
+    repositories = expand_repository_globs(repository_patterns, downloader, exclude_patterns)
 
     if not repositories:
         print("\nError: No repositories found after expanding patterns")

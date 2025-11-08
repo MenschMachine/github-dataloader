@@ -4,5 +4,10 @@
     "owner/backend-*",
     "owner/*-service",
     "another-owner/another-repo"
+  ],
+  "exclude": [
+    "owner/backend-test",
+    "owner/*-deprecated",
+    "owner/temp-*"
   ]
 }

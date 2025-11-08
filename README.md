@@ -86,6 +86,55 @@ Glob pattern syntax:
 
 The script will automatically fetch all repositories from the organization and match them against your patterns.
 
+### Exclusion Patterns
+
+You can exclude specific repositories using the optional `exclude` field in `config.json`. This is useful when a glob pattern matches too many repositories and you want to exclude certain ones.
+
+**Excluding specific repositories:**
+```json
+{
+  "repositories": [
+    "myorg/backend-*"
+  ],
+  "exclude": [
+    "myorg/backend-test",
+    "myorg/backend-deprecated"
+  ]
+}
+```
+
+**Excluding with glob patterns:**
+```json
+{
+  "repositories": [
+    "myorg/*"
+  ],
+  "exclude": [
+    "myorg/*-test",
+    "myorg/*-deprecated",
+    "myorg/temp-*"
+  ]
+}
+```
+
+**Complete example:**
+```json
+{
+  "repositories": [
+    "myorg/critical-app",
+    "myorg/backend-*",
+    "myorg/*-service"
+  ],
+  "exclude": [
+    "myorg/backend-test",
+    "myorg/*-deprecated",
+    "myorg/temp-*"
+  ]
+}
+```
+
+The exclusion patterns are applied after repository patterns are expanded. Both exact names and glob patterns are supported in the `exclude` field.
+
 ### Environment Variables
 
 You can set environment variables either by exporting them in your shell or by creating a `.env` file in the project directory.
