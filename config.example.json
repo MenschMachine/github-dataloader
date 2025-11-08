@@ -1,0 +1,6 @@
+{
+  "repositories": [
+    "owner/repository-name",
+    "another-owner/another-repo"
+  ]
+}
