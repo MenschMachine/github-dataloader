@@ -7,6 +7,7 @@ Downloads GitHub Actions workflow data and uploads to Cloudflare R2
 import os
 import json
 import sys
+import argparse
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 import time
@@ -245,8 +246,25 @@ def load_config(config_file: str = 'config.json') -> Dict:
 
 def main():
     """Main execution function"""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description='Download GitHub Actions data and optionally upload to Cloudflare R2'
+    )
+    parser.add_argument(
+        '--local-only',
+        action='store_true',
+        help='Save data locally only, skip uploading to R2'
+    )
+    args = parser.parse_args()
+
     print("GitHub Actions Data Downloader")
     print("=" * 60)
+
+    if args.local_only:
+        print("Mode: Local only (R2 upload disabled)")
+    else:
+        print("Mode: Download and upload to R2")
+    print()
 
     # Load environment variables
     github_token = os.getenv('GITHUB_TOKEN')
@@ -259,14 +277,17 @@ def main():
     missing_vars = []
     if not github_token:
         missing_vars.append('GITHUB_TOKEN')
-    if not r2_access_key:
-        missing_vars.append('R2_ACCESS_KEY_ID')
-    if not r2_secret_key:
-        missing_vars.append('R2_SECRET_ACCESS_KEY')
-    if not r2_account_id:
-        missing_vars.append('R2_ACCOUNT_ID')
-    if not r2_bucket_name:
-        missing_vars.append('R2_BUCKET_NAME')
+
+    # R2 credentials only required if not in local-only mode
+    if not args.local_only:
+        if not r2_access_key:
+            missing_vars.append('R2_ACCESS_KEY_ID')
+        if not r2_secret_key:
+            missing_vars.append('R2_SECRET_ACCESS_KEY')
+        if not r2_account_id:
+            missing_vars.append('R2_ACCOUNT_ID')
+        if not r2_bucket_name:
+            missing_vars.append('R2_BUCKET_NAME')
 
     if missing_vars:
         print("Error: Missing required environment variables:")
@@ -286,8 +307,10 @@ def main():
 
     # Initialize components
     downloader = GitHubActionsDownloader(github_token)
-    uploader = CloudflareR2Uploader(r2_access_key, r2_secret_key,
-                                     r2_account_id, r2_bucket_name)
+    uploader = None
+    if not args.local_only:
+        uploader = CloudflareR2Uploader(r2_access_key, r2_secret_key,
+                                         r2_account_id, r2_bucket_name)
     state_manager = StateManager()
 
     # Download data for each repository
@@ -324,19 +347,26 @@ def main():
         json.dump(all_data, f, indent=2)
     print(f"Saved {os.path.getsize(output_file)} bytes")
 
-    # Upload to R2
-    try:
-        uploader.upload_file(output_file)
-        print("\n✓ Successfully uploaded to Cloudflare R2")
-    except Exception as e:
-        print(f"\n✗ Failed to upload to R2: {e}")
-        sys.exit(1)
+    # Upload to R2 (skip if local-only mode)
+    if args.local_only:
+        print("\nSkipping R2 upload (local-only mode)")
+        print(f"Data saved locally to: {output_file}")
+    else:
+        try:
+            uploader.upload_file(output_file)
+            print("\n✓ Successfully uploaded to Cloudflare R2")
+        except Exception as e:
+            print(f"\n✗ Failed to upload to R2: {e}")
+            sys.exit(1)
 
     # Save state
     state_manager.save_state()
 
     print("\n" + "=" * 60)
-    print("Download and upload completed successfully!")
+    if args.local_only:
+        print("Download completed successfully!")
+    else:
+        print("Download and upload completed successfully!")
     print("=" * 60)
 
 

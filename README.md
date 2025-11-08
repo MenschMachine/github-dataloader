@@ -9,13 +9,14 @@ A Python script that downloads GitHub Actions workflow data from your repositori
 - Automatic retry logic with exponential backoff
 - Configurable repository list
 - Saves data locally before uploading
-- Uploads to Cloudflare R2 bucket
+- Optional upload to Cloudflare R2 bucket
+- Local-only mode for downloading without cloud upload
 
 ## Prerequisites
 
 - Python 3.7+
 - GitHub Personal Access Token with `repo` and `actions:read` scopes
-- Cloudflare R2 account with access credentials
+- Cloudflare R2 account with access credentials (optional, only required if uploading to R2)
 
 ## Installation
 
@@ -43,10 +44,13 @@ cp config.example.json config.json
 
 ### Environment Variables
 
-Set the following environment variables:
-
+**Required for all modes:**
 ```bash
 export GITHUB_TOKEN="your_github_personal_access_token"
+```
+
+**Required only for R2 upload (not needed with `--local-only` flag):**
+```bash
 export R2_ACCESS_KEY_ID="your_r2_access_key_id"
 export R2_SECRET_ACCESS_KEY="your_r2_secret_access_key"
 export R2_ACCOUNT_ID="your_cloudflare_account_id"
@@ -71,10 +75,16 @@ Required scopes:
 
 ## Usage
 
-Run the script:
+### Download and Upload to R2 (default)
 
 ```bash
 python github_actions_downloader.py
+```
+
+### Download to Local Only (skip R2 upload)
+
+```bash
+python github_actions_downloader.py --local-only
 ```
 
 The script will:
@@ -82,8 +92,12 @@ The script will:
 2. Fetch workflow runs since the last fetch (or all data if first run)
 3. For each workflow run, fetch associated jobs and artifacts
 4. Save data to `github-actions-{timestamp}.json`
-5. Upload the JSON file to your R2 bucket
+5. Upload the JSON file to your R2 bucket (unless `--local-only` is specified)
 6. Update `last_fetch_state.json` for incremental fetching
+
+### Command-Line Options
+
+- `--local-only`: Save data locally only, skip uploading to R2. When this flag is used, R2 environment variables are not required.
 
 ## Data Structure
 
