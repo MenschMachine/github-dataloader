@@ -14,6 +14,7 @@ import time
 import requests
 import boto3
 from pathlib import Path
+from dotenv import load_dotenv
 
 
 class GitHubActionsDownloader:
@@ -246,6 +247,9 @@ def load_config(config_file: str = 'config.json') -> Dict:
 
 def main():
     """Main execution function"""
+    # Load environment variables from .env file if it exists
+    load_dotenv()
+
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
         description='Download GitHub Actions data and optionally upload to Cloudflare R2'

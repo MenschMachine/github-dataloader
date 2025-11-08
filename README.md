@@ -44,6 +44,26 @@ cp config.example.json config.json
 
 ### Environment Variables
 
+You can set environment variables either by exporting them in your shell or by creating a `.env` file in the project directory.
+
+**Option 1: Using a .env file (recommended)**
+
+Copy the example file and fill in your credentials:
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` with your values:
+```
+GITHUB_TOKEN=your_github_personal_access_token
+R2_ACCESS_KEY_ID=your_r2_access_key_id
+R2_SECRET_ACCESS_KEY=your_r2_secret_access_key
+R2_ACCOUNT_ID=your_cloudflare_account_id
+R2_BUCKET_NAME=your_r2_bucket_name
+```
+
+**Option 2: Export in shell**
+
 **Required for all modes:**
 ```bash
 export GITHUB_TOKEN="your_github_personal_access_token"
@@ -149,11 +169,13 @@ To force a full re-fetch, delete `last_fetch_state.json`.
 
 **Important**: Never commit sensitive files to version control!
 
-Add to `.gitignore`:
+The `.gitignore` file already protects:
+- `.env` (contains your credentials)
 - `config.json` (contains your repositories)
 - `github-actions-*.json` (contains downloaded data)
 - `last_fetch_state.json` (contains state)
-- `.env` (if using for environment variables)
+
+The `.env.example` file is safe to commit as it only contains empty variable names.
 
 ## Troubleshooting
 
