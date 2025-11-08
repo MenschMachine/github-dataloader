@@ -123,9 +123,10 @@ The script will:
 1. Read repositories from `config.json`
 2. Fetch workflow runs since the last fetch (or all data if first run)
 3. For each workflow run, fetch associated jobs and artifacts
-4. Save data to `github-actions-{timestamp}.json` in the specified output directory
-5. Upload the JSON file to your R2 bucket (unless `--local-only` is specified)
-6. Update `last_fetch_state.json` for incremental fetching
+4. Save each workflow run to a separate file: `run-{repo}-{run_id}.json`
+5. Create a metadata file: `metadata-{timestamp}.json` that references all runs
+6. Upload all files to your R2 bucket under `{timestamp}/` (unless `--local-only` is specified)
+7. Update `last_fetch_state.json` for incremental fetching
 
 ### Command-Line Options
 
@@ -134,30 +135,98 @@ The script will:
 
 ## Data Structure
 
-The output JSON contains:
+### File Organization
 
+The script creates multiple files per fetch:
+
+1. **Individual workflow run files**: `run-{repository}-{run_id}.json`
+   - Contains complete data for a single workflow run
+   - Includes jobs and artifacts
+   - One file per workflow run
+
+2. **Metadata file**: `metadata-{timestamp}.json`
+   - Index of all workflow runs in this fetch
+   - References individual run files
+   - Contains summary information
+
+3. **Aggregation files**: `agg-{period_type}-{period}.json`
+   - Automatically generated for each time period
+   - Groups workflow runs by day, week, month, and year
+   - Examples: `agg-daily-2024-01-15.json`, `agg-monthly-2024-01.json`
+   - Makes it easy to query runs by time period
+
+### Metadata File Format
+
+`metadata-{timestamp}.json`:
 ```json
 {
   "downloaded_at": "2024-01-01T12:00:00Z",
+  "timestamp": "20240101_120000",
   "repositories": [
     {
       "repository": "owner/repo",
       "fetched_at": "2024-01-01T12:00:00Z",
+      "workflow_run_count": 5,
       "workflow_runs": [
         {
-          "id": 123456,
+          "run_id": 123456,
+          "filename": "run-owner-repo-123456.json",
           "name": "CI",
           "status": "completed",
           "conclusion": "success",
           "created_at": "2024-01-01T10:00:00Z",
-          "jobs": [...],
-          "artifacts": [...]
+          "updated_at": "2024-01-01T10:15:00Z"
         }
       ]
     }
   ]
 }
 ```
+
+### Individual Run File Format
+
+`run-{repository}-{run_id}.json`:
+```json
+{
+  "id": 123456,
+  "name": "CI",
+  "status": "completed",
+  "conclusion": "success",
+  "created_at": "2024-01-01T10:00:00Z",
+  "jobs": [...],
+  "artifacts": [...],
+  ... (all GitHub Actions workflow run data)
+}
+```
+
+### Aggregation File Format
+
+`agg-{period_type}-{period}.json`:
+```json
+{
+  "period_type": "daily",
+  "period": "2024-01-15",
+  "run_count": 12,
+  "workflow_runs": [
+    {
+      "repository": "owner/repo",
+      "run_id": 123456,
+      "filename": "run-owner-repo-123456.json",
+      "name": "CI",
+      "status": "completed",
+      "conclusion": "success",
+      "created_at": "2024-01-15T10:00:00Z",
+      "updated_at": "2024-01-15T10:15:00Z"
+    }
+  ]
+}
+```
+
+Aggregation types:
+- **Daily**: `agg-daily-YYYY-MM-DD.json` - Groups runs by day
+- **Weekly**: `agg-weekly-YYYY-Www.json` - Groups runs by week
+- **Monthly**: `agg-monthly-YYYY-MM.json` - Groups runs by month
+- **Yearly**: `agg-yearly-YYYY.json` - Groups runs by year
 
 ## Incremental Fetching
 
@@ -174,7 +243,9 @@ To force a full re-fetch, delete `last_fetch_state.json`.
 
 ## Files Generated
 
-- `github-actions-{timestamp}.json` - Downloaded data
+- `run-{repository}-{run_id}.json` - Individual workflow run data (one per run)
+- `metadata-{timestamp}.json` - Index file referencing all workflow runs
+- `agg-{period_type}-{period}.json` - Aggregation files grouped by time period
 - `last_fetch_state.json` - State for incremental fetching
 - `config.json` - Repository configuration (you create this)
 
@@ -185,7 +256,9 @@ To force a full re-fetch, delete `last_fetch_state.json`.
 The `.gitignore` file already protects:
 - `.env` (contains your credentials)
 - `config.json` (contains your repositories)
-- `github-actions-*.json` (contains downloaded data)
+- `run-*.json` (individual workflow run files)
+- `metadata-*.json` (metadata index files)
+- `agg-*.json` (aggregation files)
 - `last_fetch_state.json` (contains state)
 
 The `.env.example` file is safe to commit as it only contains empty variable names.

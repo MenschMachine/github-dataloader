@@ -245,6 +245,88 @@ def load_config(config_file: str = 'config.json') -> Dict:
         return json.load(f)
 
 
+def create_aggregations(metadata: Dict, output_dir: Path) -> List[str]:
+    """Create aggregation files grouped by day, week, month, and year"""
+    from collections import defaultdict
+
+    print("\nCreating aggregation files...")
+
+    aggregations = {
+        'daily': defaultdict(list),
+        'weekly': defaultdict(list),
+        'monthly': defaultdict(list),
+        'yearly': defaultdict(list)
+    }
+
+    # Collect all workflow runs from metadata
+    for repo in metadata['repositories']:
+        for run_info in repo['workflow_runs']:
+            if not run_info.get('created_at'):
+                continue
+
+            # Parse the created_at timestamp
+            created_at = run_info['created_at']
+            try:
+                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            except Exception:
+                continue
+
+            # Create aggregation entry
+            agg_entry = {
+                'repository': repo['repository'],
+                'run_id': run_info['run_id'],
+                'filename': run_info['filename'],
+                'name': run_info['name'],
+                'status': run_info['status'],
+                'conclusion': run_info['conclusion'],
+                'created_at': run_info['created_at'],
+                'updated_at': run_info['updated_at']
+            }
+
+            # Daily: YYYY-MM-DD
+            day_key = dt.strftime('%Y-%m-%d')
+            aggregations['daily'][day_key].append(agg_entry)
+
+            # Weekly: YYYY-Www (ISO week)
+            week_key = dt.strftime('%Y-W%W')
+            aggregations['weekly'][week_key].append(agg_entry)
+
+            # Monthly: YYYY-MM
+            month_key = dt.strftime('%Y-%m')
+            aggregations['monthly'][month_key].append(agg_entry)
+
+            # Yearly: YYYY
+            year_key = dt.strftime('%Y')
+            aggregations['yearly'][year_key].append(agg_entry)
+
+    # Save aggregation files
+    saved_files = []
+
+    for period_type, periods in aggregations.items():
+        for period_key, runs in periods.items():
+            agg_file = output_dir / f'agg-{period_type}-{period_key}.json'
+
+            agg_data = {
+                'period_type': period_type,
+                'period': period_key,
+                'run_count': len(runs),
+                'workflow_runs': runs
+            }
+
+            with open(agg_file, 'w') as f:
+                json.dump(agg_data, f, indent=2)
+
+            saved_files.append(str(agg_file))
+
+    print(f"Created {len(saved_files)} aggregation files:")
+    print(f"  - Daily: {len(aggregations['daily'])} files")
+    print(f"  - Weekly: {len(aggregations['weekly'])} files")
+    print(f"  - Monthly: {len(aggregations['monthly'])} files")
+    print(f"  - Yearly: {len(aggregations['yearly'])} files")
+
+    return saved_files
+
+
 def main():
     """Main execution function"""
     # Load environment variables from .env file if it exists
@@ -329,10 +411,14 @@ def main():
     state_manager = StateManager()
 
     # Download data for each repository
-    all_data = {
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    metadata = {
         'downloaded_at': datetime.now(timezone.utc).isoformat(),
+        'timestamp': timestamp,
         'repositories': []
     }
+
+    saved_files = []
 
     for repo in repositories:
         try:
@@ -344,7 +430,39 @@ def main():
                 print("First fetch - downloading all data")
 
             repo_data = downloader.download_repo_data(repo, since)
-            all_data['repositories'].append(repo_data)
+
+            # Save individual workflow run files
+            repo_slug = repo.replace('/', '-')
+            run_files = []
+
+            for run in repo_data['workflow_runs']:
+                run_id = run['id']
+                run_filename = f'run-{repo_slug}-{run_id}.json'
+                run_filepath = output_dir / run_filename
+
+                with open(run_filepath, 'w') as f:
+                    json.dump(run, f, indent=2)
+
+                run_files.append({
+                    'run_id': run_id,
+                    'filename': run_filename,
+                    'name': run.get('name', 'Unknown'),
+                    'status': run.get('status'),
+                    'conclusion': run.get('conclusion'),
+                    'created_at': run.get('created_at'),
+                    'updated_at': run.get('updated_at')
+                })
+                saved_files.append(str(run_filepath))
+
+            print(f"Saved {len(run_files)} workflow run files for {repo}")
+
+            # Add repository metadata
+            metadata['repositories'].append({
+                'repository': repo,
+                'fetched_at': repo_data['fetched_at'],
+                'workflow_run_count': len(run_files),
+                'workflow_runs': run_files
+            })
 
             # Update state
             state_manager.update_fetch_time(repo)
@@ -353,26 +471,49 @@ def main():
             print(f"Error processing repository {repo}: {e}")
             continue
 
-    # Save to JSON file
-    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-    output_file = output_dir / f'github-actions-{timestamp}.json'
+    # Save metadata file
+    metadata_file = output_dir / f'metadata-{timestamp}.json'
 
-    print(f"\nSaving data to {output_file}...")
-    with open(output_file, 'w') as f:
-        json.dump(all_data, f, indent=2)
-    print(f"Saved {os.path.getsize(output_file)} bytes")
+    print(f"\nSaving metadata to {metadata_file}...")
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"Saved metadata ({os.path.getsize(metadata_file)} bytes)")
+    print(f"Total workflow run files: {len(saved_files)}")
+
+    saved_files.append(str(metadata_file))
+
+    # Create aggregation files
+    aggregation_files = create_aggregations(metadata, output_dir)
+    saved_files.extend(aggregation_files)
 
     # Upload to R2 (skip if local-only mode)
     if args.local_only:
         print("\nSkipping R2 upload (local-only mode)")
-        print(f"Data saved locally to: {output_file}")
+        print(f"Data saved locally to: {output_dir.absolute()}")
+        print(f"  - Metadata: {metadata_file.name}")
+        print(f"  - Workflow runs: {len(saved_files) - 1} files")
     else:
-        try:
-            uploader.upload_file(str(output_file))
-            print("\n✓ Successfully uploaded to Cloudflare R2")
-        except Exception as e:
-            print(f"\n✗ Failed to upload to R2: {e}")
+        print(f"\nUploading {len(saved_files)} files to R2...")
+        upload_errors = []
+
+        for i, file_path in enumerate(saved_files, 1):
+            try:
+                file_name = Path(file_path).name
+                print(f"  [{i}/{len(saved_files)}] Uploading {file_name}...")
+                uploader.upload_file(file_path, f"{timestamp}/{file_name}")
+            except Exception as e:
+                error_msg = f"Failed to upload {file_name}: {e}"
+                print(f"  ✗ {error_msg}")
+                upload_errors.append(error_msg)
+
+        if upload_errors:
+            print(f"\n✗ Upload completed with {len(upload_errors)} errors:")
+            for error in upload_errors:
+                print(f"  - {error}")
             sys.exit(1)
+        else:
+            print(f"\n✓ Successfully uploaded all {len(saved_files)} files to R2")
+            print(f"  R2 path: {timestamp}/")
 
     # Save state
     state_manager.save_state()

@@ -4,6 +4,9 @@ config.json
 
 # Downloaded data
 github-actions-*.json
+run-*.json
+metadata-*.json
+agg-*.json
 
 # State files
 last_fetch_state.json
