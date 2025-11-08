@@ -485,7 +485,9 @@ def main():
         'repositories': []
     }
 
-    saved_files = []
+    metadata_file = output_dir / f'metadata-{timestamp}.json'
+    total_runs_saved = 0
+    upload_errors = []
 
     for repo in repositories:
         try:
@@ -507,8 +509,18 @@ def main():
                 run_filename = f'run-{repo_slug}-{run_id}.json'
                 run_filepath = output_dir / run_filename
 
+                # Save run file immediately
                 with open(run_filepath, 'w') as f:
                     json.dump(run, f, indent=2)
+
+                # Upload immediately if not in local-only mode
+                if uploader:
+                    try:
+                        uploader.upload_file(str(run_filepath), f"{timestamp}/{run_filename}")
+                    except Exception as e:
+                        error_msg = f"Failed to upload {run_filename}: {e}"
+                        print(f"  ✗ {error_msg}")
+                        upload_errors.append(error_msg)
 
                 run_files.append({
                     'run_id': run_id,
@@ -519,7 +531,7 @@ def main():
                     'created_at': run.get('created_at'),
                     'updated_at': run.get('updated_at')
                 })
-                saved_files.append(str(run_filepath))
+                total_runs_saved += 1
 
             print(f"Saved {len(run_files)} workflow run files for {repo}")
 
@@ -531,59 +543,66 @@ def main():
                 'workflow_runs': run_files
             })
 
-            # Update state
+            # Save metadata file after each repository
+            print(f"Updating metadata file...")
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+
+            # Upload metadata file immediately if not in local-only mode
+            if uploader:
+                try:
+                    uploader.upload_file(str(metadata_file), f"{timestamp}/{metadata_file.name}")
+                except Exception as e:
+                    error_msg = f"Failed to upload {metadata_file.name}: {e}"
+                    print(f"  ✗ {error_msg}")
+                    upload_errors.append(error_msg)
+
+            # Update state after successful processing
             state_manager.update_fetch_time(repo)
+            state_manager.save_state()
 
         except Exception as e:
             print(f"Error processing repository {repo}: {e}")
             continue
 
-    # Save metadata file
-    metadata_file = output_dir / f'metadata-{timestamp}.json'
-
-    print(f"\nSaving metadata to {metadata_file}...")
-    with open(metadata_file, 'w') as f:
-        json.dump(metadata, f, indent=2)
-    print(f"Saved metadata ({os.path.getsize(metadata_file)} bytes)")
-    print(f"Total workflow run files: {len(saved_files)}")
-
-    saved_files.append(str(metadata_file))
+    print(f"\nTotal workflow run files saved: {total_runs_saved}")
+    print(f"Metadata file: {metadata_file.name}")
 
     # Create aggregation files
     aggregation_files = create_aggregations(metadata, output_dir)
-    saved_files.extend(aggregation_files)
 
-    # Upload to R2 (skip if local-only mode)
-    if args.local_only:
-        print("\nSkipping R2 upload (local-only mode)")
-        print(f"Data saved locally to: {output_dir.absolute()}")
-        print(f"  - Metadata: {metadata_file.name}")
-        print(f"  - Workflow runs: {len(saved_files) - 1} files")
-    else:
-        print(f"\nUploading {len(saved_files)} files to R2...")
-        upload_errors = []
-
-        for i, file_path in enumerate(saved_files, 1):
+    # Upload aggregation files immediately
+    if uploader:
+        print(f"\nUploading {len(aggregation_files)} aggregation files to R2...")
+        for i, agg_file in enumerate(aggregation_files, 1):
             try:
-                file_name = Path(file_path).name
-                print(f"  [{i}/{len(saved_files)}] Uploading {file_name}...")
-                uploader.upload_file(file_path, f"{timestamp}/{file_name}")
+                file_name = Path(agg_file).name
+                print(f"  [{i}/{len(aggregation_files)}] Uploading {file_name}...")
+                uploader.upload_file(agg_file, f"{timestamp}/{file_name}")
             except Exception as e:
                 error_msg = f"Failed to upload {file_name}: {e}"
                 print(f"  ✗ {error_msg}")
                 upload_errors.append(error_msg)
 
+    # Report results
+    if args.local_only:
+        print("\nLocal-only mode:")
+        print(f"  Data saved to: {output_dir.absolute()}")
+        print(f"  - Workflow runs: {total_runs_saved} files")
+        print(f"  - Metadata: {metadata_file.name}")
+        print(f"  - Aggregations: {len(aggregation_files)} files")
+    else:
         if upload_errors:
             print(f"\n✗ Upload completed with {len(upload_errors)} errors:")
             for error in upload_errors:
                 print(f"  - {error}")
             sys.exit(1)
         else:
-            print(f"\n✓ Successfully uploaded all {len(saved_files)} files to R2")
+            print(f"\n✓ Successfully uploaded all files to R2")
             print(f"  R2 path: {timestamp}/")
-
-    # Save state
-    state_manager.save_state()
+            print(f"  - Workflow runs: {total_runs_saved} files")
+            print(f"  - Metadata: 1 file")
+            print(f"  - Aggregations: {len(aggregation_files)} files")
 
     print("\n" + "=" * 60)
     if args.local_only:
