@@ -126,13 +126,14 @@ class GitHubActionsDownloader:
             print(f"Failed to fetch artifacts for run {run_id}: {e}")
             return []
 
-    def download_repo_data(self, repo: str, since: Optional[str] = None) -> Dict:
+    def download_repo_data(self, repo: str, output_dir: Path, since: Optional[str] = None) -> Dict:
         """Download all actions data for a repository"""
         print(f"\n{'='*60}")
         print(f"Processing repository: {repo}")
         print(f"{'='*60}")
 
         workflow_runs = self.get_workflow_runs(repo, since)
+        repo_slug = repo.replace('/', '-')
 
         repo_data = {
             'repository': repo,
@@ -140,19 +141,49 @@ class GitHubActionsDownloader:
             'workflow_runs': []
         }
 
+        skipped_count = 0
+        downloaded_count = 0
+
         for i, run in enumerate(workflow_runs):
-            print(f"Processing run {i+1}/{len(workflow_runs)}: {run['id']}")
+            run_id = run['id']
+            run_filename = f'run-{repo_slug}-{run_id}.json'
+            run_filepath = output_dir / run_filename
+
+            # Check if file already exists
+            if run_filepath.exists():
+                print(f"Skipping run {i+1}/{len(workflow_runs)}: {run_id} (already downloaded)")
+                skipped_count += 1
+
+                # Read existing file to get complete data
+                try:
+                    with open(run_filepath, 'r') as f:
+                        run_data = json.load(f)
+                    # Mark this run as already existing
+                    run_data['_already_existed'] = True
+                    repo_data['workflow_runs'].append(run_data)
+                except Exception as e:
+                    print(f"  Warning: Could not read existing file {run_filename}: {e}")
+                    print(f"  Re-downloading...")
+                    # Fall through to download
+                else:
+                    continue  # Skip to next run
+
+            # File doesn't exist or couldn't be read, download it
+            print(f"Downloading run {i+1}/{len(workflow_runs)}: {run_id}")
+            downloaded_count += 1
 
             run_data = {
                 **run,
-                'jobs': self.get_workflow_jobs(repo, run['id']),
-                'artifacts': self.get_workflow_artifacts(repo, run['id'])
+                'jobs': self.get_workflow_jobs(repo, run_id),
+                'artifacts': self.get_workflow_artifacts(repo, run_id),
+                '_already_existed': False  # Mark as newly downloaded
             }
             repo_data['workflow_runs'].append(run_data)
 
             # Rate limiting: GitHub API allows 5000 requests/hour
             time.sleep(0.1)  # Small delay to be respectful
 
+        print(f"Summary: {downloaded_count} downloaded, {skipped_count} skipped (already exist)")
         return repo_data
 
 
@@ -498,30 +529,41 @@ def main():
             else:
                 print("First fetch - downloading all data")
 
-            repo_data = downloader.download_repo_data(repo, since)
+            repo_data = downloader.download_repo_data(repo, output_dir, since)
 
             # Save individual workflow run files
             repo_slug = repo.replace('/', '-')
             run_files = []
+            repo_newly_saved = 0
+            repo_existing = 0
 
             for run in repo_data['workflow_runs']:
                 run_id = run['id']
                 run_filename = f'run-{repo_slug}-{run_id}.json'
                 run_filepath = output_dir / run_filename
 
-                # Save run file immediately
-                with open(run_filepath, 'w') as f:
-                    json.dump(run, f, indent=2)
+                # Check if file was already existing or newly downloaded
+                file_already_existed = run.pop('_already_existed', False)
 
-                # Upload immediately if not in local-only mode
-                if uploader:
-                    try:
-                        uploader.upload_file(str(run_filepath), f"{timestamp}/{run_filename}")
-                    except Exception as e:
-                        error_msg = f"Failed to upload {run_filename}: {e}"
-                        print(f"  ✗ {error_msg}")
-                        upload_errors.append(error_msg)
+                if not file_already_existed:
+                    # Save run file immediately (only if new)
+                    with open(run_filepath, 'w') as f:
+                        json.dump(run, f, indent=2)
+                    total_runs_saved += 1
+                    repo_newly_saved += 1
 
+                    # Upload immediately if not in local-only mode
+                    if uploader:
+                        try:
+                            uploader.upload_file(str(run_filepath), f"{timestamp}/{run_filename}")
+                        except Exception as e:
+                            error_msg = f"Failed to upload {run_filename}: {e}"
+                            print(f"  ✗ {error_msg}")
+                            upload_errors.append(error_msg)
+                else:
+                    repo_existing += 1
+
+                # Add to metadata whether new or existing
                 run_files.append({
                     'run_id': run_id,
                     'filename': run_filename,
@@ -531,9 +573,8 @@ def main():
                     'created_at': run.get('created_at'),
                     'updated_at': run.get('updated_at')
                 })
-                total_runs_saved += 1
 
-            print(f"Saved {len(run_files)} workflow run files for {repo}")
+            print(f"Processed {len(run_files)} workflow runs for {repo} ({repo_newly_saved} new, {repo_existing} existing)")
 
             # Add repository metadata
             metadata['repositories'].append({
