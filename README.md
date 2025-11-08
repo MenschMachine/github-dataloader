@@ -107,17 +107,30 @@ python github_actions_downloader.py
 python github_actions_downloader.py --local-only
 ```
 
+### Save to Custom Directory
+
+```bash
+python github_actions_downloader.py --output-dir ./data
+```
+
+### Combine Options
+
+```bash
+python github_actions_downloader.py --local-only --output-dir ./github-data
+```
+
 The script will:
 1. Read repositories from `config.json`
 2. Fetch workflow runs since the last fetch (or all data if first run)
 3. For each workflow run, fetch associated jobs and artifacts
-4. Save data to `github-actions-{timestamp}.json`
+4. Save data to `github-actions-{timestamp}.json` in the specified output directory
 5. Upload the JSON file to your R2 bucket (unless `--local-only` is specified)
 6. Update `last_fetch_state.json` for incremental fetching
 
 ### Command-Line Options
 
 - `--local-only`: Save data locally only, skip uploading to R2. When this flag is used, R2 environment variables are not required.
+- `--output-dir <directory>`: Directory to save downloaded JSON files (default: current directory). The directory will be created if it doesn't exist.
 
 ## Data Structure
 

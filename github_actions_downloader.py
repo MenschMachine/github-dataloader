@@ -259,6 +259,12 @@ def main():
         action='store_true',
         help='Save data locally only, skip uploading to R2'
     )
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='.',
+        help='Directory to save downloaded JSON files (default: current directory)'
+    )
     args = parser.parse_args()
 
     print("GitHub Actions Data Downloader")
@@ -268,6 +274,11 @@ def main():
         print("Mode: Local only (R2 upload disabled)")
     else:
         print("Mode: Download and upload to R2")
+
+    # Create output directory if it doesn't exist
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {output_dir.absolute()}")
     print()
 
     # Load environment variables
@@ -344,7 +355,7 @@ def main():
 
     # Save to JSON file
     timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-    output_file = f'github-actions-{timestamp}.json'
+    output_file = output_dir / f'github-actions-{timestamp}.json'
 
     print(f"\nSaving data to {output_file}...")
     with open(output_file, 'w') as f:
@@ -357,7 +368,7 @@ def main():
         print(f"Data saved locally to: {output_file}")
     else:
         try:
-            uploader.upload_file(output_file)
+            uploader.upload_file(str(output_file))
             print("\n✓ Successfully uploaded to Cloudflare R2")
         except Exception as e:
             print(f"\n✗ Failed to upload to R2: {e}")
