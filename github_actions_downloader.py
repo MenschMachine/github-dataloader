@@ -221,6 +221,14 @@ class CloudflareR2Uploader:
             region_name='auto'  # R2 uses 'auto' as region
         )
 
+    def object_exists(self, object_name: str) -> bool:
+        """Check if an object exists in R2"""
+        try:
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=object_name)
+            return True
+        except Exception:
+            return False
+
     def upload_file(self, file_path: str, object_name: Optional[str] = None,
                    max_retries: int = 4) -> bool:
         """Upload file to R2 with retry logic"""
@@ -243,6 +251,59 @@ class CloudflareR2Uploader:
                     print(f"Upload failed after {max_retries} attempts: {e}")
                     raise
         return False
+
+    def sync_directory(self, local_dir: Path, timestamp: str) -> Dict[str, int]:
+        """
+        Sync all local JSON files to R2, uploading only files that don't exist in R2.
+        Returns dict with upload statistics.
+        """
+        print(f"\nSyncing local directory to R2...")
+        print(f"Scanning: {local_dir.absolute()}")
+
+        # Find all JSON files in the directory
+        json_files = list(local_dir.glob('*.json'))
+
+        stats = {
+            'total_files': len(json_files),
+            'uploaded': 0,
+            'skipped': 0,
+            'failed': 0
+        }
+
+        if not json_files:
+            print("No JSON files found to sync")
+            return stats
+
+        print(f"Found {len(json_files)} local JSON files")
+
+        for i, file_path in enumerate(json_files, 1):
+            file_name = file_path.name
+            r2_key = f"{timestamp}/{file_name}"
+
+            # Check if file already exists in R2
+            if self.object_exists(r2_key):
+                print(f"  [{i}/{len(json_files)}] ⊘ {file_name} (already in R2)")
+                stats['skipped'] += 1
+                continue
+
+            # Upload missing file
+            try:
+                print(f"  [{i}/{len(json_files)}] ↑ {file_name}")
+                self.upload_file(str(file_path), r2_key)
+                stats['uploaded'] += 1
+            except Exception as e:
+                print(f"  [{i}/{len(json_files)}] ✗ {file_name}: {e}")
+                stats['failed'] += 1
+
+        # Print summary
+        print(f"\nSync Summary:")
+        print(f"  Total files: {stats['total_files']}")
+        print(f"  Uploaded: {stats['uploaded']}")
+        print(f"  Already in R2: {stats['skipped']}")
+        if stats['failed'] > 0:
+            print(f"  Failed: {stats['failed']}")
+
+        return stats
 
 
 class StateManager:
@@ -657,6 +718,17 @@ def main():
                 error_msg = f"Failed to upload {file_name}: {e}"
                 print(f"  ✗ {error_msg}")
                 upload_errors.append(error_msg)
+
+    # Sync all local files to R2 (uploads any missing files from previous --local-only runs)
+    if uploader:
+        try:
+            sync_stats = uploader.sync_directory(output_dir, timestamp)
+            if sync_stats['failed'] > 0:
+                upload_errors.append(f"Failed to upload {sync_stats['failed']} files during sync")
+        except Exception as e:
+            error_msg = f"Sync operation failed: {e}"
+            print(f"\n✗ {error_msg}")
+            upload_errors.append(error_msg)
 
     # Report results
     if args.local_only:
