@@ -127,8 +127,7 @@ class GitHubActionsDownloader:
             return []
 
     def download_repo_data(self, repo: str, output_dir: Path, since: Optional[str] = None,
-                          uploader: Optional['CloudflareR2Uploader'] = None,
-                          timestamp: Optional[str] = None) -> Dict:
+                          uploader: Optional['CloudflareR2Uploader'] = None) -> Dict:
         """Download all actions data for a repository"""
         print(f"\n{'='*60}")
         print(f"Processing repository: {repo}")
@@ -188,9 +187,13 @@ class GitHubActionsDownloader:
             print(f"  ✓ Saved to {run_filename}")
 
             # UPLOAD IMMEDIATELY if uploader is provided
-            if uploader and timestamp:
+            if uploader:
                 try:
-                    uploader.upload_file(str(run_filepath), f"{timestamp}/{run_filename}")
+                    # Check if file already exists in R2
+                    if not uploader.object_exists(run_filename):
+                        uploader.upload_file(str(run_filepath), run_filename)
+                    else:
+                        print(f"  ⊘ {run_filename} already in R2")
                 except Exception as e:
                     print(f"  ✗ Upload failed: {e}")
 
@@ -252,7 +255,7 @@ class CloudflareR2Uploader:
                     raise
         return False
 
-    def sync_directory(self, local_dir: Path, timestamp: str) -> Dict[str, int]:
+    def sync_directory(self, local_dir: Path) -> Dict[str, int]:
         """
         Sync all local JSON files to R2, uploading only files that don't exist in R2.
         Returns dict with upload statistics.
@@ -278,10 +281,9 @@ class CloudflareR2Uploader:
 
         for i, file_path in enumerate(json_files, 1):
             file_name = file_path.name
-            r2_key = f"{timestamp}/{file_name}"
 
             # Check if file already exists in R2
-            if self.object_exists(r2_key):
+            if self.object_exists(file_name):
                 print(f"  [{i}/{len(json_files)}] ⊘ {file_name} (already in R2)")
                 stats['skipped'] += 1
                 continue
@@ -289,7 +291,7 @@ class CloudflareR2Uploader:
             # Upload missing file
             try:
                 print(f"  [{i}/{len(json_files)}] ↑ {file_name}")
-                self.upload_file(str(file_path), r2_key)
+                self.upload_file(str(file_path), file_name)
                 stats['uploaded'] += 1
             except Exception as e:
                 print(f"  [{i}/{len(json_files)}] ✗ {file_name}: {e}")
@@ -635,7 +637,7 @@ def main():
             else:
                 print("First fetch - downloading all data")
 
-            repo_data = downloader.download_repo_data(repo, output_dir, since, uploader, timestamp)
+            repo_data = downloader.download_repo_data(repo, output_dir, since, uploader)
 
             # Build metadata from downloaded runs
             repo_slug = repo.replace('/', '-')
@@ -685,7 +687,10 @@ def main():
             # Upload metadata file immediately if not in local-only mode
             if uploader:
                 try:
-                    uploader.upload_file(str(metadata_file), f"{timestamp}/{metadata_file.name}")
+                    if not uploader.object_exists(metadata_file.name):
+                        uploader.upload_file(str(metadata_file), metadata_file.name)
+                    else:
+                        print(f"  ⊘ {metadata_file.name} already in R2")
                 except Exception as e:
                     error_msg = f"Failed to upload {metadata_file.name}: {e}"
                     print(f"  ✗ {error_msg}")
@@ -711,8 +716,11 @@ def main():
         for i, agg_file in enumerate(aggregation_files, 1):
             try:
                 file_name = Path(agg_file).name
-                print(f"  [{i}/{len(aggregation_files)}] Uploading {file_name}...")
-                uploader.upload_file(agg_file, f"{timestamp}/{file_name}")
+                if not uploader.object_exists(file_name):
+                    print(f"  [{i}/{len(aggregation_files)}] Uploading {file_name}...")
+                    uploader.upload_file(agg_file, file_name)
+                else:
+                    print(f"  [{i}/{len(aggregation_files)}] ⊘ {file_name} already in R2")
             except Exception as e:
                 error_msg = f"Failed to upload {file_name}: {e}"
                 print(f"  ✗ {error_msg}")
@@ -721,7 +729,7 @@ def main():
     # Sync all local files to R2 (uploads any missing files from previous --local-only runs)
     if uploader:
         try:
-            sync_stats = uploader.sync_directory(output_dir, timestamp)
+            sync_stats = uploader.sync_directory(output_dir)
             if sync_stats['failed'] > 0:
                 upload_errors.append(f"Failed to upload {sync_stats['failed']} files during sync")
         except Exception as e:
@@ -744,7 +752,6 @@ def main():
             sys.exit(1)
         else:
             print(f"\n✓ Successfully uploaded all files to R2")
-            print(f"  R2 path: {timestamp}/")
             print(f"  - Workflow runs: {total_runs_saved} files")
             print(f"  - Metadata: 1 file")
             print(f"  - Aggregations: {len(aggregation_files)} files")
