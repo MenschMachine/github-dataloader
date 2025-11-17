@@ -181,6 +181,52 @@ class CloudflareR2Uploader:
                     raise
         return False
 
+    def list_all_objects(self) -> List[str]:
+        """List all objects in the R2 bucket"""
+        objects = []
+        try:
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=self.bucket_name)
+
+            for page in pages:
+                if 'Contents' in page:
+                    for obj in page['Contents']:
+                        objects.append(obj['Key'])
+
+            return objects
+        except Exception as e:
+            print(f"Failed to list objects: {e}")
+            raise
+
+    def delete_all_objects(self) -> int:
+        """Delete all objects from the R2 bucket"""
+        objects = self.list_all_objects()
+
+        if not objects:
+            print("Bucket is already empty")
+            return 0
+
+        print(f"Found {len(objects)} object(s) in bucket {self.bucket_name}")
+        print("\nDeleting all objects...")
+
+        deleted_count = 0
+        failed_count = 0
+
+        for i, obj_key in enumerate(objects, 1):
+            try:
+                print(f"  [{i}/{len(objects)}] Deleting {obj_key}...")
+                self.s3_client.delete_object(Bucket=self.bucket_name, Key=obj_key)
+                deleted_count += 1
+            except Exception as e:
+                print(f"  ✗ Failed to delete {obj_key}: {e}")
+                failed_count += 1
+
+        print(f"\nDeleted {deleted_count} object(s)")
+        if failed_count > 0:
+            print(f"Failed to delete {failed_count} object(s)")
+
+        return deleted_count
+
 
 def load_config(config_file: str = 'config.json') -> Dict:
     """Load configuration from file"""
@@ -349,6 +395,11 @@ def main():
         default=20,
         help='Number of recent workflow runs to fetch per repository (default: 20)'
     )
+    parser.add_argument(
+        '--clear',
+        action='store_true',
+        help='Delete all files from R2 bucket and exit'
+    )
     args = parser.parse_args()
 
     print("GitHub Actions Current State Downloader")
@@ -376,7 +427,9 @@ def main():
 
     # Validate environment variables
     missing_vars = []
-    if not github_token:
+
+    # GitHub token not required for --clear mode
+    if not args.clear and not github_token:
         missing_vars.append('GITHUB_TOKEN')
 
     # R2 credentials only required if not in local-only mode
@@ -395,6 +448,28 @@ def main():
         for var in missing_vars:
             print(f"  - {var}")
         sys.exit(1)
+
+    # Handle --clear mode: delete all files from R2 and exit
+    if args.clear:
+        print("\n" + "!" * 60)
+        print("WARNING: This will delete ALL files from the R2 bucket!")
+        print(f"Bucket: {r2_bucket_name}")
+        print("!" * 60)
+
+        response = input("\nType 'yes' to confirm deletion: ")
+        if response.lower() != 'yes':
+            print("Deletion cancelled.")
+            sys.exit(0)
+
+        print()
+        uploader = CloudflareR2Uploader(r2_access_key, r2_secret_key,
+                                         r2_account_id, r2_bucket_name)
+        deleted_count = uploader.delete_all_objects()
+
+        print("\n" + "=" * 60)
+        print(f"✓ Deleted {deleted_count} file(s) from R2 bucket")
+        print("=" * 60)
+        sys.exit(0)
 
     # Load configuration
     config = load_config()

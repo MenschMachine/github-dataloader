@@ -222,6 +222,20 @@ python github_actions_downloader.py --output-dir ./data
 python github_actions_downloader.py --run-count 50
 ```
 
+### Clear All Files from R2 Bucket
+
+```bash
+python github_actions_downloader.py --clear
+```
+
+This will:
+1. List all files in the R2 bucket
+2. Ask for confirmation ("yes")
+3. Delete all files from the bucket
+4. Exit without downloading anything
+
+**Warning:** This is a destructive operation and cannot be undone!
+
 ### Combine Options
 
 ```bash
@@ -240,6 +254,7 @@ The script will:
 - `--local-only`: Save data locally only, skip uploading to R2. When this flag is used, R2 environment variables are not required.
 - `--output-dir <directory>`: Directory to save the aggregate file (default: current directory). The directory will be created if it doesn't exist.
 - `--run-count <number>`: Number of recent workflow runs to fetch per repository (default: 20).
+- `--clear`: Delete all files from the R2 bucket and exit. Requires confirmation. Does not download any data.
 
 ## Data Structure
 
