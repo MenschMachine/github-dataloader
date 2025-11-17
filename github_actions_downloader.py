@@ -280,6 +280,21 @@ class StateManager:
 
         self.state[repo]['last_fetch'] = timestamp
 
+    def get_repository_set(self) -> Optional[List[str]]:
+        """Get the last repository set used for aggregations"""
+        return self.state.get('_aggregation_repos')
+
+    def set_repository_set(self, repos: List[str]):
+        """Store the repository set used for aggregations"""
+        self.state['_aggregation_repos'] = sorted(repos)
+
+    def repository_set_changed(self, current_repos: List[str]) -> bool:
+        """Check if the repository set has changed since last run"""
+        last_repos = self.get_repository_set()
+        if last_repos is None:
+            return True
+        return sorted(current_repos) != sorted(last_repos)
+
     def save_state(self):
         """Save state to file"""
         try:
@@ -376,6 +391,126 @@ def expand_repository_globs(patterns: List[str], downloader: GitHubActionsDownlo
             print(f"  No repositories matched exclusion patterns")
 
     return expanded_repos
+
+
+def rebuild_aggregations_from_files(output_dir: Path, repositories: List[str]) -> List[str]:
+    """Rebuild all aggregation files from local run-*.json files for specified repositories"""
+    from collections import defaultdict
+
+    print("\n" + "=" * 60)
+    print("Repository set changed - rebuilding all aggregations")
+    print("=" * 60)
+
+    aggregations = {
+        'daily': defaultdict(list),
+        'weekly': defaultdict(list),
+        'monthly': defaultdict(list),
+        'yearly': defaultdict(list)
+    }
+
+    # Find all run-*.json files
+    run_files = list(output_dir.glob('run-*.json'))
+    print(f"Found {len(run_files)} local workflow run files")
+
+    # Filter to only include files from repositories in current config
+    repo_slugs = {repo.replace('/', '-') for repo in repositories}
+    processed_count = 0
+
+    for run_file in run_files:
+        # Extract repo slug from filename: run-{repo_slug}-{run_id}.json
+        filename_parts = run_file.name.replace('run-', '').replace('.json', '').rsplit('-', 1)
+        if len(filename_parts) != 2:
+            continue
+
+        repo_slug = filename_parts[0]
+
+        # Skip if this repo is not in current config
+        if repo_slug not in repo_slugs:
+            continue
+
+        # Read the run file
+        try:
+            with open(run_file, 'r') as f:
+                run_data = json.load(f)
+        except Exception as e:
+            print(f"  Warning: Could not read {run_file.name}: {e}")
+            continue
+
+        processed_count += 1
+
+        # Extract created_at
+        created_at = run_data.get('created_at')
+        if not created_at:
+            continue
+
+        try:
+            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+        except Exception:
+            continue
+
+        # Reconstruct repository name from slug
+        repository = repo_slug.replace('-', '/', 1)
+
+        # Create aggregation entry
+        agg_entry = {
+            'repository': repository,
+            'run_id': run_data.get('id'),
+            'filename': run_file.name,
+            'name': run_data.get('name', 'Unknown'),
+            'status': run_data.get('status'),
+            'conclusion': run_data.get('conclusion'),
+            'created_at': created_at,
+            'updated_at': run_data.get('updated_at')
+        }
+
+        # Add to aggregations
+        day_key = dt.strftime('%Y-%m-%d')
+        aggregations['daily'][day_key].append(agg_entry)
+
+        week_key = dt.strftime('%Y-W%W')
+        aggregations['weekly'][week_key].append(agg_entry)
+
+        month_key = dt.strftime('%Y-%m')
+        aggregations['monthly'][month_key].append(agg_entry)
+
+        year_key = dt.strftime('%Y')
+        aggregations['yearly'][year_key].append(agg_entry)
+
+    print(f"Processed {processed_count} workflow runs from current repository set")
+
+    # Delete old aggregation files
+    old_agg_files = list(output_dir.glob('agg-*.json'))
+    if old_agg_files:
+        print(f"Removing {len(old_agg_files)} old aggregation files...")
+        for old_file in old_agg_files:
+            old_file.unlink()
+
+    # Save new aggregation files
+    saved_files = []
+
+    for period_type, periods in aggregations.items():
+        for period_key, runs in periods.items():
+            agg_file = output_dir / f'agg-{period_type}-{period_key}.json'
+
+            agg_data = {
+                'period_type': period_type,
+                'period': period_key,
+                'run_count': len(runs),
+                'workflow_runs': runs
+            }
+
+            with open(agg_file, 'w') as f:
+                json.dump(agg_data, f, indent=2)
+
+            saved_files.append(str(agg_file))
+
+    print(f"Created {len(saved_files)} new aggregation files:")
+    print(f"  - Daily: {len(aggregations['daily'])} files")
+    print(f"  - Weekly: {len(aggregations['weekly'])} files")
+    print(f"  - Monthly: {len(aggregations['monthly'])} files")
+    print(f"  - Yearly: {len(aggregations['yearly'])} files")
+
+    return saved_files
 
 
 def create_aggregations(metadata: Dict, output_dir: Path) -> List[str]:
@@ -556,6 +691,13 @@ def main():
                                          r2_account_id, r2_bucket_name)
     state_manager = StateManager()
 
+    # Check if repository set has changed
+    repo_set_changed = state_manager.repository_set_changed(repositories)
+    if repo_set_changed:
+        print("\n" + "!" * 60)
+        print("Repository set has changed since last run")
+        print("!" * 60)
+
     # Download data for each repository
     timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
     metadata = {
@@ -637,8 +779,16 @@ def main():
     print(f"\nTotal workflow run files saved: {total_runs_saved}")
     print(f"Metadata file: {metadata_file.name}")
 
-    # Create aggregation files
-    aggregation_files = create_aggregations(metadata, output_dir)
+    # Create or rebuild aggregation files
+    if repo_set_changed:
+        # Repository set changed - rebuild from all local files
+        aggregation_files = rebuild_aggregations_from_files(output_dir, repositories)
+        # Update the repository set in state
+        state_manager.set_repository_set(repositories)
+        state_manager.save_state()
+    else:
+        # Normal incremental update
+        aggregation_files = create_aggregations(metadata, output_dir)
 
     # Upload aggregation files immediately
     if uploader:
@@ -646,7 +796,9 @@ def main():
         for i, agg_file in enumerate(aggregation_files, 1):
             try:
                 file_name = Path(agg_file).name
-                if not uploader.object_exists(file_name):
+                # Always upload when repo set changed (files were regenerated)
+                # Otherwise check if exists
+                if repo_set_changed or not uploader.object_exists(file_name):
                     print(f"  [{i}/{len(aggregation_files)}] Uploading {file_name}...")
                     uploader.upload_file(agg_file, file_name)
                 else:
