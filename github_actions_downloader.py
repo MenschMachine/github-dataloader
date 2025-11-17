@@ -801,13 +801,31 @@ def main():
     # Upload aggregation files immediately
     if uploader:
         print(f"\nUploading {len(aggregation_files)} aggregation files to R2...")
+        # Get current date for checking if file needs update
+        current_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+
         for i, agg_file in enumerate(aggregation_files, 1):
             try:
                 file_name = Path(agg_file).name
-                # Always upload when repo set changed (files were regenerated)
-                # Otherwise check if exists
-                if repo_set_changed or not uploader.object_exists(file_name):
-                    print(f"  [{i}/{len(aggregation_files)}] Uploading {file_name}...")
+
+                # Check if this is a current day aggregation file
+                is_current_day = f'-daily-{current_date}' in file_name
+
+                # Always upload if:
+                # 1. Repository set changed (files were regenerated), OR
+                # 2. This is current day's aggregation (data may have updated), OR
+                # 3. File doesn't exist in R2 yet
+                should_upload = (
+                    repo_set_changed or
+                    is_current_day or
+                    not uploader.object_exists(file_name)
+                )
+
+                if should_upload:
+                    reason = ""
+                    if is_current_day:
+                        reason = " (current day - updating)"
+                    print(f"  [{i}/{len(aggregation_files)}] Uploading {file_name}{reason}...")
                     uploader.upload_file(agg_file, file_name)
                 else:
                     print(f"  [{i}/{len(aggregation_files)}] ⊘ {file_name} already in R2")
