@@ -180,11 +180,22 @@ Required scopes:
 
 ### Cloudflare R2
 
+**IMPORTANT:** This script requires **R2 Access Keys**, not Cloudflare API Tokens.
+
 1. Log in to Cloudflare Dashboard
 2. Go to R2 Object Storage
 3. Create a bucket
-4. Create API tokens with read/write permissions
-5. Note your Account ID from the R2 overview page
+4. **Generate R2 Access Keys** (not API tokens):
+   - In R2 dashboard, go to "Manage R2 API Tokens"
+   - Click "Create API Token"
+   - Select permissions (read & write for the bucket)
+   - This will generate:
+     - **Access Key ID** (32 characters) → Use for `R2_ACCESS_KEY_ID`
+     - **Secret Access Key** (43 characters) → Use for `R2_SECRET_ACCESS_KEY`
+   - **Note:** Regular Cloudflare API tokens (40+ characters) will NOT work with this script
+5. Note your Account ID from the R2 overview page → Use for `R2_ACCOUNT_ID`
+
+The script uses boto3's S3-compatible interface, which requires R2 Access Keys, not general Cloudflare API tokens.
 
 ## Usage
 
@@ -371,10 +382,16 @@ curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user
 
 ### R2 Upload Errors
 
-Verify your R2 credentials:
-- Check Account ID
-- Verify API token permissions
+**"Credential access key has length X, should be 32" error:**
+- This means you're using a Cloudflare API token instead of R2 Access Keys
+- Solution: Generate proper R2 Access Keys as described in the Cloudflare R2 section above
+- The Access Key ID must be exactly 32 characters
+
+**Other R2 authentication issues:**
+- Check Account ID is correct
+- Verify R2 Access Keys have read/write permissions for your bucket
 - Ensure bucket name is correct
+- Make sure you're using Access Keys, not API tokens
 
 ## License
 
