@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GitHub Actions Data Downloader
-Downloads GitHub Actions workflow data and uploads to Cloudflare R2
+Downloads last 20 workflow runs per repository and creates a current state aggregate
 """
 
 import os
@@ -48,22 +48,17 @@ class GitHubActionsDownloader:
                     raise
         return None
 
-    def _get_all_pages(self, url: str) -> List[Dict]:
-        """Fetch all pages from paginated API endpoint"""
-        results = []
+    def get_org_repositories(self, org: str) -> List[str]:
+        """Fetch all repositories for an organization"""
+        print(f"Fetching repositories for organization: {org}")
+        url = f"{self.api_base}/orgs/{org}/repos?per_page=100"
+
+        repos = []
         while url:
             response = self.session.get(url)
             response.raise_for_status()
             data = response.json()
-
-            if isinstance(data, list):
-                results.extend(data)
-            elif isinstance(data, dict) and 'workflow_runs' in data:
-                results.extend(data['workflow_runs'])
-            elif isinstance(data, dict) and 'jobs' in data:
-                results.extend(data['jobs'])
-            else:
-                results.append(data)
+            repos.extend([repo['full_name'] for repo in data])
 
             # Get next page from Link header
             link_header = response.headers.get('Link', '')
@@ -73,38 +68,24 @@ class GitHubActionsDownloader:
                     url = link[link.find('<')+1:link.find('>')]
                     break
 
-        return results
+        print(f"Found {len(repos)} repositories in {org}")
+        return repos
 
-    def get_org_repositories(self, org: str) -> List[str]:
-        """Fetch all repositories for an organization"""
-        print(f"Fetching repositories for organization: {org}")
-        url = f"{self.api_base}/orgs/{org}/repos"
-        params = {'per_page': 100, 'type': 'all'}
+    def get_last_workflow_runs(self, repo: str, count: int = 20) -> List[Dict]:
+        """Fetch last N workflow runs for a repository"""
+        print(f"Fetching last {count} workflow runs for {repo}...")
+        url = f"{self.api_base}/repos/{repo}/actions/runs?per_page={count}&page=1"
 
-        param_str = '&'.join([f"{k}={v}" for k, v in params.items()])
-        url = f"{url}?{param_str}"
-
-        repos = self._get_all_pages(url)
-        repo_names = [repo['full_name'] for repo in repos]
-        print(f"Found {len(repo_names)} repositories in {org}")
-        return repo_names
-
-    def get_workflow_runs(self, repo: str, since: Optional[str] = None) -> List[Dict]:
-        """Fetch workflow runs for a repository"""
-        print(f"Fetching workflow runs for {repo}...")
-        url = f"{self.api_base}/repos/{repo}/actions/runs"
-        params = {'per_page': 100}
-
-        if since:
-            params['created'] = f'>={since}'
-
-        # Add params to URL
-        param_str = '&'.join([f"{k}={v}" for k, v in params.items()])
-        url = f"{url}?{param_str}"
-
-        runs = self._get_all_pages(url)
-        print(f"Found {len(runs)} workflow runs")
-        return runs
+        try:
+            data = self._make_request(url)
+            if data and 'workflow_runs' in data:
+                runs = data['workflow_runs']
+                print(f"Found {len(runs)} workflow runs")
+                return runs
+            return []
+        except Exception as e:
+            print(f"Failed to fetch workflow runs for {repo}: {e}")
+            return []
 
     def get_workflow_jobs(self, repo: str, run_id: int) -> List[Dict]:
         """Fetch jobs for a specific workflow run"""
@@ -126,15 +107,13 @@ class GitHubActionsDownloader:
             print(f"Failed to fetch artifacts for run {run_id}: {e}")
             return []
 
-    def download_repo_data(self, repo: str, output_dir: Path, since: Optional[str] = None,
-                          uploader: Optional['CloudflareR2Uploader'] = None) -> Dict:
-        """Download all actions data for a repository"""
+    def download_repo_data(self, repo: str, run_count: int = 20) -> Dict:
+        """Download last N workflow runs for a repository"""
         print(f"\n{'='*60}")
         print(f"Processing repository: {repo}")
         print(f"{'='*60}")
 
-        workflow_runs = self.get_workflow_runs(repo, since)
-        repo_slug = repo.replace('/', '-')
+        workflow_runs = self.get_last_workflow_runs(repo, run_count)
 
         repo_data = {
             'repository': repo,
@@ -142,58 +121,22 @@ class GitHubActionsDownloader:
             'workflow_runs': []
         }
 
-        skipped_count = 0
-        downloaded_count = 0
-
         for i, run in enumerate(workflow_runs):
             run_id = run['id']
-            run_filename = f'run-{repo_slug}-{run_id}.json'
-            run_filepath = output_dir / run_filename
-
-            # Check if file already exists
-            if run_filepath.exists():
-                print(f"Skipping run {i+1}/{len(workflow_runs)}: {run_id} (already downloaded)")
-                skipped_count += 1
-
-                # Read existing file to get complete data
-                try:
-                    with open(run_filepath, 'r') as f:
-                        run_data = json.load(f)
-                    # Mark this run as already existing
-                    run_data['_already_existed'] = True
-                    repo_data['workflow_runs'].append(run_data)
-                except Exception as e:
-                    print(f"  Warning: Could not read existing file {run_filename}: {e}")
-                    print(f"  Re-downloading...")
-                    # Fall through to download
-                else:
-                    continue  # Skip to next run
-
-            # File doesn't exist or couldn't be read, download it
-            print(f"Downloading run {i+1}/{len(workflow_runs)}: {run_id}")
-            downloaded_count += 1
+            print(f"Fetching details for run {i+1}/{len(workflow_runs)}: {run_id}")
 
             run_data = {
                 **run,
                 'jobs': self.get_workflow_jobs(repo, run_id),
                 'artifacts': self.get_workflow_artifacts(repo, run_id),
-                '_already_existed': False  # Mark as newly downloaded
             }
-
-            # SAVE FILE IMMEDIATELY after downloading
-            run_data_to_save = {k: v for k, v in run_data.items() if k != '_already_existed'}
-            with open(run_filepath, 'w') as f:
-                json.dump(run_data_to_save, f, indent=2)
-            print(f"  ✓ Saved to {run_filename}")
-
-            # Run files are NOT uploaded to R2 (only aggregations are uploaded)
 
             repo_data['workflow_runs'].append(run_data)
 
             # Rate limiting: GitHub API allows 5000 requests/hour
             time.sleep(0.1)  # Small delay to be respectful
 
-        print(f"Summary: {downloaded_count} downloaded, {skipped_count} skipped (already exist)")
+        print(f"Fetched {len(workflow_runs)} workflow runs with full details")
         return repo_data
 
 
@@ -214,14 +157,6 @@ class CloudflareR2Uploader:
             aws_secret_access_key=secret_access_key,
             region_name='auto'  # R2 uses 'auto' as region
         )
-
-    def object_exists(self, object_name: str) -> bool:
-        """Check if an object exists in R2"""
-        try:
-            self.s3_client.head_object(Bucket=self.bucket_name, Key=object_name)
-            return True
-        except Exception:
-            return False
 
     def upload_file(self, file_path: str, object_name: Optional[str] = None,
                    max_retries: int = 4) -> bool:
@@ -245,64 +180,6 @@ class CloudflareR2Uploader:
                     print(f"Upload failed after {max_retries} attempts: {e}")
                     raise
         return False
-
-
-
-class StateManager:
-    """Manages state for incremental fetching"""
-
-    def __init__(self, state_file: str = 'last_fetch_state.json'):
-        self.state_file = state_file
-        self.state = self._load_state()
-
-    def _load_state(self) -> Dict:
-        """Load state from file"""
-        if os.path.exists(self.state_file):
-            try:
-                with open(self.state_file, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"Failed to load state file: {e}")
-                return {}
-        return {}
-
-    def get_last_fetch_time(self, repo: str) -> Optional[str]:
-        """Get last fetch time for a repository"""
-        return self.state.get(repo, {}).get('last_fetch')
-
-    def update_fetch_time(self, repo: str, timestamp: Optional[str] = None):
-        """Update last fetch time for a repository"""
-        if timestamp is None:
-            timestamp = datetime.now(timezone.utc).isoformat()
-
-        if repo not in self.state:
-            self.state[repo] = {}
-
-        self.state[repo]['last_fetch'] = timestamp
-
-    def get_repository_set(self) -> Optional[List[str]]:
-        """Get the last repository set used for aggregations"""
-        return self.state.get('_aggregation_repos')
-
-    def set_repository_set(self, repos: List[str]):
-        """Store the repository set used for aggregations"""
-        self.state['_aggregation_repos'] = sorted(repos)
-
-    def repository_set_changed(self, current_repos: List[str]) -> bool:
-        """Check if the repository set has changed since last run"""
-        last_repos = self.get_repository_set()
-        if last_repos is None:
-            return True
-        return sorted(current_repos) != sorted(last_repos)
-
-    def save_state(self):
-        """Save state to file"""
-        try:
-            with open(self.state_file, 'w') as f:
-                json.dump(self.state, f, indent=2)
-            print(f"State saved to {self.state_file}")
-        except Exception as e:
-            print(f"Failed to save state: {e}")
 
 
 def load_config(config_file: str = 'config.json') -> Dict:
@@ -393,206 +270,57 @@ def expand_repository_globs(patterns: List[str], downloader: GitHubActionsDownlo
     return expanded_repos
 
 
-def rebuild_aggregations_from_files(output_dir: Path, repositories: List[str]) -> List[str]:
-    """Rebuild all aggregation files from local run-*.json files for specified repositories"""
-    from collections import defaultdict
+def create_current_state_aggregate(all_repo_data: List[Dict], output_dir: Path) -> str:
+    """Create a single aggregate file with current state of all repositories"""
+    print("\nCreating current state aggregate...")
 
-    print("\n" + "=" * 60)
-    print("Repository set changed - rebuilding all aggregations")
-    print("=" * 60)
-
-    aggregations = {
-        'daily': defaultdict(list),
-        'weekly': defaultdict(list),
-        'monthly': defaultdict(list),
-        'yearly': defaultdict(list)
+    aggregate = {
+        'updated_at': datetime.now(timezone.utc).isoformat(),
+        'repository_count': len(all_repo_data),
+        'total_runs': sum(len(repo['workflow_runs']) for repo in all_repo_data),
+        'repositories': []
     }
 
-    # Find all run-*.json files
-    run_files = list(output_dir.glob('run-*.json'))
-    print(f"Found {len(run_files)} local workflow run files")
-
-    # Filter to only include files from repositories in current config
-    repo_slugs = {repo.replace('/', '-') for repo in repositories}
-    processed_count = 0
-
-    for run_file in run_files:
-        # Extract repo slug from filename: run-{repo_slug}-{run_id}.json
-        filename_parts = run_file.name.replace('run-', '').replace('.json', '').rsplit('-', 1)
-        if len(filename_parts) != 2:
-            continue
-
-        repo_slug = filename_parts[0]
-
-        # Skip if this repo is not in current config
-        if repo_slug not in repo_slugs:
-            continue
-
-        # Read the run file
-        try:
-            with open(run_file, 'r') as f:
-                run_data = json.load(f)
-        except Exception as e:
-            print(f"  Warning: Could not read {run_file.name}: {e}")
-            continue
-
-        processed_count += 1
-
-        # Extract created_at
-        created_at = run_data.get('created_at')
-        if not created_at:
-            continue
-
-        try:
-            dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-        except Exception:
-            continue
-
-        # Reconstruct repository name from slug
-        repository = repo_slug.replace('-', '/', 1)
-
-        # Create aggregation entry
-        agg_entry = {
-            'repository': repository,
-            'run_id': run_data.get('id'),
-            'filename': run_file.name,
-            'name': run_data.get('name', 'Unknown'),
-            'status': run_data.get('status'),
-            'conclusion': run_data.get('conclusion'),
-            'created_at': created_at,
-            'updated_at': run_data.get('updated_at')
+    for repo_data in all_repo_data:
+        repo_info = {
+            'name': repo_data['repository'],
+            'fetched_at': repo_data['fetched_at'],
+            'run_count': len(repo_data['workflow_runs']),
+            'workflow_runs': []
         }
 
-        # Add to aggregations
-        day_key = dt.strftime('%Y-%m-%d')
-        aggregations['daily'][day_key].append(agg_entry)
-
-        week_key = dt.strftime('%Y-W%W')
-        aggregations['weekly'][week_key].append(agg_entry)
-
-        month_key = dt.strftime('%Y-%m')
-        aggregations['monthly'][month_key].append(agg_entry)
-
-        year_key = dt.strftime('%Y')
-        aggregations['yearly'][year_key].append(agg_entry)
-
-    print(f"Processed {processed_count} workflow runs from current repository set")
-
-    # Delete old aggregation files
-    old_agg_files = list(output_dir.glob('agg-*.json'))
-    if old_agg_files:
-        print(f"Removing {len(old_agg_files)} old aggregation files...")
-        for old_file in old_agg_files:
-            old_file.unlink()
-
-    # Save new aggregation files
-    saved_files = []
-
-    for period_type, periods in aggregations.items():
-        for period_key, runs in periods.items():
-            agg_file = output_dir / f'agg-{period_type}-{period_key}.json'
-
-            agg_data = {
-                'period_type': period_type,
-                'period': period_key,
-                'run_count': len(runs),
-                'workflow_runs': runs
+        for run in repo_data['workflow_runs']:
+            # Extract only the essential info for the aggregate
+            run_summary = {
+                'run_id': run['id'],
+                'name': run.get('name', 'Unknown'),
+                'status': run.get('status'),
+                'conclusion': run.get('conclusion'),
+                'created_at': run.get('created_at'),
+                'updated_at': run.get('updated_at'),
+                'head_branch': run.get('head_branch'),
+                'head_sha': run.get('head_sha', '')[:7],  # Short SHA
+                'event': run.get('event'),
+                'run_number': run.get('run_number'),
+                'html_url': run.get('html_url'),
+                'jobs_count': len(run.get('jobs', [])),
+                'artifacts_count': len(run.get('artifacts', []))
             }
+            repo_info['workflow_runs'].append(run_summary)
 
-            with open(agg_file, 'w') as f:
-                json.dump(agg_data, f, indent=2)
+        aggregate['repositories'].append(repo_info)
 
-            saved_files.append(str(agg_file))
+    # Save aggregate file
+    agg_file = output_dir / 'current-state.json'
+    with open(agg_file, 'w') as f:
+        json.dump(aggregate, f, indent=2)
 
-    print(f"Created {len(saved_files)} new aggregation files:")
-    print(f"  - Daily: {len(aggregations['daily'])} files")
-    print(f"  - Weekly: {len(aggregations['weekly'])} files")
-    print(f"  - Monthly: {len(aggregations['monthly'])} files")
-    print(f"  - Yearly: {len(aggregations['yearly'])} files")
+    print(f"Created current state aggregate:")
+    print(f"  - {aggregate['repository_count']} repositories")
+    print(f"  - {aggregate['total_runs']} total workflow runs")
+    print(f"  - File: {agg_file.name}")
 
-    return saved_files
-
-
-def create_aggregations(metadata: Dict, output_dir: Path) -> List[str]:
-    """Create aggregation files grouped by day, week, month, and year"""
-    from collections import defaultdict
-
-    print("\nCreating aggregation files...")
-
-    aggregations = {
-        'daily': defaultdict(list),
-        'weekly': defaultdict(list),
-        'monthly': defaultdict(list),
-        'yearly': defaultdict(list)
-    }
-
-    # Collect all workflow runs from metadata
-    for repo in metadata['repositories']:
-        for run_info in repo['workflow_runs']:
-            if not run_info.get('created_at'):
-                continue
-
-            # Parse the created_at timestamp
-            created_at = run_info['created_at']
-            try:
-                dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            except Exception:
-                continue
-
-            # Create aggregation entry
-            agg_entry = {
-                'repository': repo['repository'],
-                'run_id': run_info['run_id'],
-                'filename': run_info['filename'],
-                'name': run_info['name'],
-                'status': run_info['status'],
-                'conclusion': run_info['conclusion'],
-                'created_at': run_info['created_at'],
-                'updated_at': run_info['updated_at']
-            }
-
-            # Daily: YYYY-MM-DD
-            day_key = dt.strftime('%Y-%m-%d')
-            aggregations['daily'][day_key].append(agg_entry)
-
-            # Weekly: YYYY-Www (ISO week)
-            week_key = dt.strftime('%Y-W%W')
-            aggregations['weekly'][week_key].append(agg_entry)
-
-            # Monthly: YYYY-MM
-            month_key = dt.strftime('%Y-%m')
-            aggregations['monthly'][month_key].append(agg_entry)
-
-            # Yearly: YYYY
-            year_key = dt.strftime('%Y')
-            aggregations['yearly'][year_key].append(agg_entry)
-
-    # Save aggregation files
-    saved_files = []
-
-    for period_type, periods in aggregations.items():
-        for period_key, runs in periods.items():
-            agg_file = output_dir / f'agg-{period_type}-{period_key}.json'
-
-            agg_data = {
-                'period_type': period_type,
-                'period': period_key,
-                'run_count': len(runs),
-                'workflow_runs': runs
-            }
-
-            with open(agg_file, 'w') as f:
-                json.dump(agg_data, f, indent=2)
-
-            saved_files.append(str(agg_file))
-
-    print(f"Created {len(saved_files)} aggregation files:")
-    print(f"  - Daily: {len(aggregations['daily'])} files")
-    print(f"  - Weekly: {len(aggregations['weekly'])} files")
-    print(f"  - Monthly: {len(aggregations['monthly'])} files")
-    print(f"  - Yearly: {len(aggregations['yearly'])} files")
-
-    return saved_files
+    return str(agg_file)
 
 
 def main():
@@ -602,7 +330,7 @@ def main():
 
     # Parse command-line arguments
     parser = argparse.ArgumentParser(
-        description='Download GitHub Actions data and optionally upload to Cloudflare R2'
+        description='Download last 20 workflow runs per repository and create current state aggregate'
     )
     parser.add_argument(
         '--local-only',
@@ -613,17 +341,25 @@ def main():
         '--output-dir',
         type=str,
         default='.',
-        help='Directory to save downloaded JSON files (default: current directory)'
+        help='Directory to save the aggregate file (default: current directory)'
+    )
+    parser.add_argument(
+        '--run-count',
+        type=int,
+        default=20,
+        help='Number of recent workflow runs to fetch per repository (default: 20)'
     )
     args = parser.parse_args()
 
-    print("GitHub Actions Data Downloader")
+    print("GitHub Actions Current State Downloader")
     print("=" * 60)
 
     if args.local_only:
         print("Mode: Local only (R2 upload disabled)")
     else:
         print("Mode: Download and upload to R2")
+
+    print(f"Fetching last {args.run_count} runs per repository")
 
     # Create output directory if it doesn't exist
     output_dir = Path(args.output_dir)
@@ -689,175 +425,43 @@ def main():
     if not args.local_only:
         uploader = CloudflareR2Uploader(r2_access_key, r2_secret_key,
                                          r2_account_id, r2_bucket_name)
-    state_manager = StateManager()
-
-    # Check if repository set has changed
-    repo_set_changed = state_manager.repository_set_changed(repositories)
-    if repo_set_changed:
-        print("\n" + "!" * 60)
-        print("Repository set has changed since last run")
-        print("!" * 60)
 
     # Download data for each repository
-    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-    metadata = {
-        'downloaded_at': datetime.now(timezone.utc).isoformat(),
-        'timestamp': timestamp,
-        'repositories': []
-    }
-
-    metadata_file = output_dir / f'metadata-{timestamp}.json'
-    total_runs_saved = 0
-    upload_errors = []
+    all_repo_data = []
 
     for repo in repositories:
         try:
-            # Get last fetch time for incremental updates
-            # Always fetch from start of current day (UTC) to catch updates
-            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            last_fetch = state_manager.get_last_fetch_time(repo)
-
-            if last_fetch:
-                last_fetch_dt = datetime.fromisoformat(last_fetch)
-                # Use the earlier of: last fetch time or start of today
-                since_dt = min(last_fetch_dt, today_start)
-                since = since_dt.isoformat()
-                print(f"Fetching data since {since} (includes current day)")
-            else:
-                since = None
-                print("First fetch - downloading all data")
-
-            repo_data = downloader.download_repo_data(repo, output_dir, since, uploader)
-
-            # Build metadata from downloaded runs
-            repo_slug = repo.replace('/', '-')
-            run_files = []
-            repo_newly_saved = 0
-            repo_existing = 0
-
-            for run in repo_data['workflow_runs']:
-                run_id = run['id']
-                run_filename = f'run-{repo_slug}-{run_id}.json'
-
-                # Check if file was already existing or newly downloaded
-                file_already_existed = run.pop('_already_existed', False)
-
-                if not file_already_existed:
-                    total_runs_saved += 1
-                    repo_newly_saved += 1
-                else:
-                    repo_existing += 1
-
-                # Add to metadata whether new or existing
-                run_files.append({
-                    'run_id': run_id,
-                    'filename': run_filename,
-                    'name': run.get('name', 'Unknown'),
-                    'status': run.get('status'),
-                    'conclusion': run.get('conclusion'),
-                    'created_at': run.get('created_at'),
-                    'updated_at': run.get('updated_at')
-                })
-
-            print(f"Processed {len(run_files)} workflow runs for {repo} ({repo_newly_saved} new, {repo_existing} existing)")
-
-            # Add repository metadata
-            metadata['repositories'].append({
-                'repository': repo,
-                'fetched_at': repo_data['fetched_at'],
-                'workflow_run_count': len(run_files),
-                'workflow_runs': run_files
-            })
-
-            # Save metadata file after each repository
-            print(f"Updating metadata file...")
-            with open(metadata_file, 'w') as f:
-                json.dump(metadata, f, indent=2)
-
-            # Metadata files are NOT uploaded to R2 (only aggregations are uploaded)
-
-            # Update state after successful processing
-            state_manager.update_fetch_time(repo)
-            state_manager.save_state()
-
+            repo_data = downloader.download_repo_data(repo, args.run_count)
+            all_repo_data.append(repo_data)
         except Exception as e:
             print(f"Error processing repository {repo}: {e}")
             continue
 
-    print(f"\nTotal workflow run files saved: {total_runs_saved}")
-    print(f"Metadata file: {metadata_file.name}")
+    if not all_repo_data:
+        print("\nError: No data was downloaded from any repository")
+        sys.exit(1)
 
-    # Create or rebuild aggregation files
-    if repo_set_changed:
-        # Repository set changed - rebuild from all local files
-        aggregation_files = rebuild_aggregations_from_files(output_dir, repositories)
-        # Update the repository set in state
-        state_manager.set_repository_set(repositories)
-        state_manager.save_state()
-    else:
-        # Normal incremental update
-        aggregation_files = create_aggregations(metadata, output_dir)
+    # Create current state aggregate
+    aggregate_file = create_current_state_aggregate(all_repo_data, output_dir)
 
-    # Upload aggregation files immediately
+    # Upload aggregate file to R2
     if uploader:
-        print(f"\nUploading {len(aggregation_files)} aggregation files to R2...")
-        # Get current date for checking if file needs update
-        current_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-
-        for i, agg_file in enumerate(aggregation_files, 1):
-            try:
-                file_name = Path(agg_file).name
-
-                # Check if this is a current day aggregation file
-                is_current_day = f'-daily-{current_date}' in file_name
-
-                # Always upload if:
-                # 1. Repository set changed (files were regenerated), OR
-                # 2. This is current day's aggregation (data may have updated), OR
-                # 3. File doesn't exist in R2 yet
-                should_upload = (
-                    repo_set_changed or
-                    is_current_day or
-                    not uploader.object_exists(file_name)
-                )
-
-                if should_upload:
-                    reason = ""
-                    if is_current_day:
-                        reason = " (current day - updating)"
-                    print(f"  [{i}/{len(aggregation_files)}] Uploading {file_name}{reason}...")
-                    uploader.upload_file(agg_file, file_name)
-                else:
-                    print(f"  [{i}/{len(aggregation_files)}] ⊘ {file_name} already in R2")
-            except Exception as e:
-                error_msg = f"Failed to upload {file_name}: {e}"
-                print(f"  ✗ {error_msg}")
-                upload_errors.append(error_msg)
-
-    # No sync needed - only aggregation files are uploaded to R2
+        print(f"\nUploading current state aggregate to R2...")
+        try:
+            uploader.upload_file(aggregate_file, 'current-state.json')
+            print(f"✓ Successfully uploaded current-state.json to R2")
+        except Exception as e:
+            print(f"✗ Failed to upload: {e}")
+            sys.exit(1)
 
     # Report results
-    if args.local_only:
-        print("\nLocal-only mode:")
-        print(f"  Data saved to: {output_dir.absolute()}")
-        print(f"  - Workflow runs: {total_runs_saved} files")
-        print(f"  - Metadata: {metadata_file.name}")
-        print(f"  - Aggregations: {len(aggregation_files)} files")
-    else:
-        if upload_errors:
-            print(f"\n✗ Upload completed with {len(upload_errors)} errors:")
-            for error in upload_errors:
-                print(f"  - {error}")
-            sys.exit(1)
-        else:
-            print(f"\n✓ Successfully uploaded aggregation files to R2")
-            print(f"  - Aggregations: {len(aggregation_files)} files")
-
     print("\n" + "=" * 60)
     if args.local_only:
         print("Download completed successfully!")
+        print(f"  Current state: {aggregate_file}")
     else:
         print("Download and upload completed successfully!")
+        print(f"  Current state uploaded to R2: current-state.json")
     print("=" * 60)
 
 
