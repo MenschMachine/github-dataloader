@@ -107,7 +107,7 @@ class GitHubActionsDownloader:
             print(f"Failed to fetch artifacts for run {run_id}: {e}")
             return []
 
-    def download_repo_data(self, repo: str, run_count: int = 20) -> Dict:
+    def download_repo_data(self, repo: str, run_count: int = 20, fetch_details: bool = False) -> Dict:
         """Download last N workflow runs for a repository"""
         print(f"\n{'='*60}")
         print(f"Processing repository: {repo}")
@@ -121,22 +121,29 @@ class GitHubActionsDownloader:
             'workflow_runs': []
         }
 
-        for i, run in enumerate(workflow_runs):
-            run_id = run['id']
-            print(f"Fetching details for run {i+1}/{len(workflow_runs)}: {run_id}")
+        if fetch_details:
+            print(f"Fetching detailed info (jobs & artifacts) for {len(workflow_runs)} runs...")
+            for i, run in enumerate(workflow_runs):
+                run_id = run['id']
+                print(f"  [{i+1}/{len(workflow_runs)}] Fetching details for run {run_id}")
 
-            run_data = {
-                **run,
-                'jobs': self.get_workflow_jobs(repo, run_id),
-                'artifacts': self.get_workflow_artifacts(repo, run_id),
-            }
+                run_data = {
+                    **run,
+                    'jobs': self.get_workflow_jobs(repo, run_id),
+                    'artifacts': self.get_workflow_artifacts(repo, run_id),
+                }
 
-            repo_data['workflow_runs'].append(run_data)
+                repo_data['workflow_runs'].append(run_data)
 
-            # Rate limiting: GitHub API allows 5000 requests/hour
-            time.sleep(0.1)  # Small delay to be respectful
+                # Rate limiting: GitHub API allows 5000 requests/hour
+                time.sleep(0.1)  # Small delay to be respectful
 
-        print(f"Fetched {len(workflow_runs)} workflow runs with full details")
+            print(f"Fetched {len(workflow_runs)} workflow runs with full details")
+        else:
+            # Just use the basic run info (no extra API calls)
+            repo_data['workflow_runs'] = workflow_runs
+            print(f"Fetched {len(workflow_runs)} workflow runs (basic info only)")
+
         return repo_data
 
 
@@ -400,6 +407,11 @@ def main():
         action='store_true',
         help='Delete all files from R2 bucket and exit'
     )
+    parser.add_argument(
+        '--fetch-details',
+        action='store_true',
+        help='Fetch detailed job and artifact info for each run (slower, more API calls)'
+    )
     args = parser.parse_args()
 
     print("GitHub Actions Current State Downloader")
@@ -506,7 +518,7 @@ def main():
 
     for repo in repositories:
         try:
-            repo_data = downloader.download_repo_data(repo, args.run_count)
+            repo_data = downloader.download_repo_data(repo, args.run_count, args.fetch_details)
             all_repo_data.append(repo_data)
         except Exception as e:
             print(f"Error processing repository {repo}: {e}")

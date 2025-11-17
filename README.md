@@ -222,6 +222,20 @@ python github_actions_downloader.py --output-dir ./data
 python github_actions_downloader.py --run-count 50
 ```
 
+### Fetch Detailed Job and Artifact Info
+
+```bash
+python github_actions_downloader.py --fetch-details
+```
+
+By default, the script only fetches basic run information (status, conclusion, etc.) which is very fast (1 API call per repository).
+
+Use `--fetch-details` to also fetch jobs and artifacts for each run. This is much slower (2-3 additional API calls per run).
+
+**Performance comparison:**
+- Without `--fetch-details`: ~1 API call per repository
+- With `--fetch-details`: ~40-60 API calls per repository (for 20 runs)
+
 ### Clear All Files from R2 Bucket
 
 ```bash
@@ -254,6 +268,7 @@ The script will:
 - `--local-only`: Save data locally only, skip uploading to R2. When this flag is used, R2 environment variables are not required.
 - `--output-dir <directory>`: Directory to save the aggregate file (default: current directory). The directory will be created if it doesn't exist.
 - `--run-count <number>`: Number of recent workflow runs to fetch per repository (default: 20).
+- `--fetch-details`: Fetch detailed job and artifact info for each run (default: off). Much slower but provides jobs_count and artifacts_count in the aggregate.
 - `--clear`: Delete all files from the R2 bucket and exit. Requires confirmation. Does not download any data.
 
 ## Data Structure
