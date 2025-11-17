@@ -186,16 +186,7 @@ class GitHubActionsDownloader:
                 json.dump(run_data_to_save, f, indent=2)
             print(f"  ✓ Saved to {run_filename}")
 
-            # UPLOAD IMMEDIATELY if uploader is provided
-            if uploader:
-                try:
-                    # Check if file already exists in R2
-                    if not uploader.object_exists(run_filename):
-                        uploader.upload_file(str(run_filepath), run_filename)
-                    else:
-                        print(f"  ⊘ {run_filename} already in R2")
-                except Exception as e:
-                    print(f"  ✗ Upload failed: {e}")
+            # Run files are NOT uploaded to R2 (only aggregations are uploaded)
 
             repo_data['workflow_runs'].append(run_data)
 
@@ -255,57 +246,6 @@ class CloudflareR2Uploader:
                     raise
         return False
 
-    def sync_directory(self, local_dir: Path) -> Dict[str, int]:
-        """
-        Sync all local JSON files to R2, uploading only files that don't exist in R2.
-        Returns dict with upload statistics.
-        """
-        print(f"\nSyncing local directory to R2...")
-        print(f"Scanning: {local_dir.absolute()}")
-
-        # Find all JSON files in the directory
-        json_files = list(local_dir.glob('*.json'))
-
-        stats = {
-            'total_files': len(json_files),
-            'uploaded': 0,
-            'skipped': 0,
-            'failed': 0
-        }
-
-        if not json_files:
-            print("No JSON files found to sync")
-            return stats
-
-        print(f"Found {len(json_files)} local JSON files")
-
-        for i, file_path in enumerate(json_files, 1):
-            file_name = file_path.name
-
-            # Check if file already exists in R2
-            if self.object_exists(file_name):
-                print(f"  [{i}/{len(json_files)}] ⊘ {file_name} (already in R2)")
-                stats['skipped'] += 1
-                continue
-
-            # Upload missing file
-            try:
-                print(f"  [{i}/{len(json_files)}] ↑ {file_name}")
-                self.upload_file(str(file_path), file_name)
-                stats['uploaded'] += 1
-            except Exception as e:
-                print(f"  [{i}/{len(json_files)}] ✗ {file_name}: {e}")
-                stats['failed'] += 1
-
-        # Print summary
-        print(f"\nSync Summary:")
-        print(f"  Total files: {stats['total_files']}")
-        print(f"  Uploaded: {stats['uploaded']}")
-        print(f"  Already in R2: {stats['skipped']}")
-        if stats['failed'] > 0:
-            print(f"  Failed: {stats['failed']}")
-
-        return stats
 
 
 class StateManager:
@@ -684,17 +624,7 @@ def main():
             with open(metadata_file, 'w') as f:
                 json.dump(metadata, f, indent=2)
 
-            # Upload metadata file immediately if not in local-only mode
-            if uploader:
-                try:
-                    if not uploader.object_exists(metadata_file.name):
-                        uploader.upload_file(str(metadata_file), metadata_file.name)
-                    else:
-                        print(f"  ⊘ {metadata_file.name} already in R2")
-                except Exception as e:
-                    error_msg = f"Failed to upload {metadata_file.name}: {e}"
-                    print(f"  ✗ {error_msg}")
-                    upload_errors.append(error_msg)
+            # Metadata files are NOT uploaded to R2 (only aggregations are uploaded)
 
             # Update state after successful processing
             state_manager.update_fetch_time(repo)
@@ -726,16 +656,7 @@ def main():
                 print(f"  ✗ {error_msg}")
                 upload_errors.append(error_msg)
 
-    # Sync all local files to R2 (uploads any missing files from previous --local-only runs)
-    if uploader:
-        try:
-            sync_stats = uploader.sync_directory(output_dir)
-            if sync_stats['failed'] > 0:
-                upload_errors.append(f"Failed to upload {sync_stats['failed']} files during sync")
-        except Exception as e:
-            error_msg = f"Sync operation failed: {e}"
-            print(f"\n✗ {error_msg}")
-            upload_errors.append(error_msg)
+    # No sync needed - only aggregation files are uploaded to R2
 
     # Report results
     if args.local_only:
@@ -751,9 +672,7 @@ def main():
                 print(f"  - {error}")
             sys.exit(1)
         else:
-            print(f"\n✓ Successfully uploaded all files to R2")
-            print(f"  - Workflow runs: {total_runs_saved} files")
-            print(f"  - Metadata: 1 file")
+            print(f"\n✓ Successfully uploaded aggregation files to R2")
             print(f"  - Aggregations: {len(aggregation_files)} files")
 
     print("\n" + "=" * 60)
