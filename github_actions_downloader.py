@@ -713,10 +713,18 @@ def main():
     for repo in repositories:
         try:
             # Get last fetch time for incremental updates
-            since = state_manager.get_last_fetch_time(repo)
-            if since:
-                print(f"Fetching data since {since}")
+            # Always fetch from start of current day (UTC) to catch updates
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            last_fetch = state_manager.get_last_fetch_time(repo)
+
+            if last_fetch:
+                last_fetch_dt = datetime.fromisoformat(last_fetch)
+                # Use the earlier of: last fetch time or start of today
+                since_dt = min(last_fetch_dt, today_start)
+                since = since_dt.isoformat()
+                print(f"Fetching data since {since} (includes current day)")
             else:
+                since = None
                 print("First fetch - downloading all data")
 
             repo_data = downloader.download_repo_data(repo, output_dir, since, uploader)
