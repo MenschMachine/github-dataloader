@@ -270,6 +270,7 @@ The script will:
 - `--run-count <number>`: Number of recent workflow runs to fetch per repository (default: 20).
 - `--fetch-details`: Fetch detailed job and artifact info for each run (default: off). Much slower but provides jobs_count and artifacts_count in the aggregate.
 - `--clear`: Delete all files from the R2 bucket and exit. Requires confirmation. Does not download any data.
+- `--no-adaptive-polling`: Disable adaptive polling backoff. Always run regardless of when changes were last detected. Useful for testing or if you want traditional fixed-interval polling.
 
 ## Data Structure
 
@@ -345,6 +346,62 @@ Run this script every hour via cron to:
 Example cron entry (runs every hour):
 ```bash
 0 * * * * cd /path/to/github-dataloader && python github_actions_downloader.py
+```
+
+### Adaptive Polling (Recommended for Frequent Runs)
+
+The script includes **intelligent backoff** that automatically adjusts polling frequency based on activity. Perfect for running from cron every minute while avoiding unnecessary API calls.
+
+**How it works:**
+- Set up cron to run every minute
+- Script tracks when changes were last detected
+- Automatically backs off when nothing changes
+- Resets to fast polling when changes are detected
+
+**Backoff schedule:**
+- **0 unchanged runs**: Poll every 1 minute (fast)
+- **1 unchanged run**: Poll every 2 minutes
+- **2 unchanged runs**: Poll every 5 minutes
+- **3+ unchanged runs**: Poll every 10 minutes (max)
+
+**Setup:**
+```bash
+# Cron: run every minute
+* * * * * cd /path/to/github-dataloader && python github_actions_downloader.py
+```
+
+**Example behavior:**
+```
+# First run - detects changes
+▶️  Ready to run (unchanged: 0)
+Content has changed, upload needed
+📊 Adaptive polling: changes detected, reset backoff
+
+# Second run (1 minute later) - no changes
+▶️  Ready to run (unchanged: 0)
+Content unchanged, skipping upload
+📊 Adaptive polling: no changes, backoff increased
+
+# Third run (1 minute later) - skipped due to backoff
+⏸️  Skipping run: Backing off: wait 58s more (unchanged: 1)
+
+# Runs every 2 minutes until something changes...
+
+# Later - build completes, changes detected
+▶️  Ready to run (unchanged: 1)
+Content has changed, upload needed
+📊 Adaptive polling: changes detected, reset backoff
+```
+
+**Benefits:**
+- ✅ Responsive when things are changing (1 min latency)
+- ✅ Efficient when idle (automatically backs off)
+- ✅ No wasted API calls or R2 reads
+- ✅ Works with simple cron setup
+
+**Disable adaptive polling:**
+```bash
+python github_actions_downloader.py --no-adaptive-polling
 ```
 
 ## Error Handling

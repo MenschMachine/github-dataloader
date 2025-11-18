@@ -9,8 +9,9 @@ metadata-*.json
 agg-*.json
 current-state.json
 
-# State files (no longer used, but keeping for cleanup)
-last_fetch_state.json
+# State files
+polling_state.json
+last_fetch_state.json  # No longer used, but keeping for cleanup
 
 # Python
 __pycache__/
