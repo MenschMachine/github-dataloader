@@ -407,11 +407,20 @@ class AdaptivePollingState:
         now = datetime.now(timezone.utc)
         elapsed_seconds = (now - last_run).total_seconds()
 
-        # Check if we should reset due to daily 7am UTC reset
-        # If it's past 7am today and last run was before 7am today (or yesterday)
-        today_7am = now.replace(hour=7, minute=0, second=0, microsecond=0)
-        if now >= today_7am and last_run < today_7am:
-            return True, "Daily 7am reset - ready to run"
+        # Check if we should reset due to daily 7am HKT reset
+        # HKT is UTC+8, so 7am HKT = 23:00 UTC (previous day)
+        # Calculate the most recent 7am HKT reset time in UTC
+        from datetime import timedelta
+        if now.hour >= 23:
+            # We're at or past today's 23:00 UTC, so today's 7am HKT
+            reset_time = now.replace(hour=23, minute=0, second=0, microsecond=0)
+        else:
+            # Before 23:00 UTC today, so yesterday's 23:00 UTC was the last 7am HKT
+            yesterday = now - timedelta(days=1)
+            reset_time = yesterday.replace(hour=23, minute=0, second=0, microsecond=0)
+
+        if now >= reset_time and last_run < reset_time:
+            return True, "Daily 7am HKT reset - ready to run"
 
         # Backoff intervals based on consecutive unchanged runs
         unchanged = self.state['consecutive_unchanged']
@@ -421,11 +430,11 @@ class AdaptivePollingState:
             interval = 120    # 2 minutes
         elif unchanged == 2:
             interval = 300    # 5 minutes
-        elif unchanged == 3:
-            interval = 600    # 10 minutes
-        elif unchanged == 4:
-            interval = 1200   # 20 minutes
-        else:  # 5+
+        elif unchanged < 10:
+            interval = 600    # 10 minutes (unchanged 3-9)
+        elif unchanged < 25:
+            interval = 1200   # 20 minutes (unchanged 10-24)
+        else:  # 25+
             interval = 1800   # 30 minutes
 
         if elapsed_seconds < interval:
