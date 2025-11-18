@@ -372,6 +372,80 @@ def aggregates_differ(new_aggregate: Dict, old_content: bytes) -> bool:
         return True
 
 
+class AdaptivePollingState:
+    """Manages adaptive polling state for smart backoff"""
+
+    def __init__(self, state_file: str = 'polling_state.json'):
+        self.state_file = state_file
+        self.state = self._load_state()
+
+    def _load_state(self) -> Dict:
+        """Load state from file"""
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Warning: Could not load polling state: {e}")
+                return self._default_state()
+        return self._default_state()
+
+    def _default_state(self) -> Dict:
+        """Return default state"""
+        return {
+            'last_run_time': None,
+            'last_change_time': None,
+            'consecutive_unchanged': 0
+        }
+
+    def should_run(self) -> Tuple[bool, str]:
+        """Determine if we should run based on backoff logic"""
+        if self.state['last_run_time'] is None:
+            return True, "First run"
+
+        last_run = datetime.fromisoformat(self.state['last_run_time'])
+        now = datetime.now(timezone.utc)
+        elapsed_seconds = (now - last_run).total_seconds()
+
+        # Backoff intervals based on consecutive unchanged runs
+        unchanged = self.state['consecutive_unchanged']
+        if unchanged == 0:
+            interval = 60  # 1 minute
+        elif unchanged == 1:
+            interval = 120  # 2 minutes
+        elif unchanged == 2:
+            interval = 300  # 5 minutes
+        else:
+            interval = 600  # 10 minutes
+
+        if elapsed_seconds < interval:
+            wait_time = int(interval - elapsed_seconds)
+            return False, f"Backing off: wait {wait_time}s more (unchanged: {unchanged})"
+
+        return True, f"Ready to run (unchanged: {unchanged})"
+
+    def record_run(self, changed: bool):
+        """Record that a run completed and whether changes were found"""
+        now = datetime.now(timezone.utc).isoformat()
+        self.state['last_run_time'] = now
+
+        if changed:
+            self.state['last_change_time'] = now
+            self.state['consecutive_unchanged'] = 0
+        else:
+            self.state['consecutive_unchanged'] += 1
+
+        self._save_state()
+
+    def _save_state(self):
+        """Save state to file"""
+        try:
+            with open(self.state_file, 'w') as f:
+                json.dump(self.state, f, indent=2)
+        except Exception as e:
+            print(f"Warning: Could not save polling state: {e}")
+
+
 def create_current_state_aggregate(all_repo_data: List[Dict], output_dir: Path) -> Tuple[str, Dict]:
     """Create a single aggregate file with current state of all repositories"""
     print("\nCreating current state aggregate...")
@@ -461,7 +535,21 @@ def main():
         action='store_true',
         help='Fetch detailed job and artifact info for each run (slower, more API calls)'
     )
+    parser.add_argument(
+        '--no-adaptive-polling',
+        action='store_true',
+        help='Disable adaptive polling (always run, ignore backoff)'
+    )
     args = parser.parse_args()
+
+    # Check adaptive polling state (unless disabled or in clear mode)
+    if not args.no_adaptive_polling and not args.clear:
+        polling_state = AdaptivePollingState()
+        should_run, reason = polling_state.should_run()
+        if not should_run:
+            print(f"⏸️  Skipping run: {reason}")
+            sys.exit(0)
+        print(f"▶️  {reason}")
 
     print("GitHub Actions Current State Downloader")
     print("=" * 60)
@@ -581,6 +669,7 @@ def main():
     aggregate_file, aggregate_data = create_current_state_aggregate(all_repo_data, output_dir)
 
     # Upload aggregate file to R2
+    content_changed = False
     if uploader:
         print(f"\nChecking if upload is needed...")
 
@@ -594,11 +683,14 @@ def main():
                 if aggregates_differ(aggregate_data, old_content):
                     print("Content has changed, upload needed")
                     should_upload = True
+                    content_changed = True
                 else:
                     print("Content unchanged, skipping upload")
                     should_upload = False
+                    content_changed = False
         else:
             print("No existing file in R2, upload needed")
+            content_changed = True
 
         if should_upload:
             print(f"\nUploading current state aggregate to R2...")
@@ -610,6 +702,17 @@ def main():
                 sys.exit(1)
         else:
             print(f"✓ No upload needed - current-state.json is up to date")
+    else:
+        # In local-only mode, always consider content as changed
+        content_changed = True
+
+    # Record this run in adaptive polling state
+    if not args.no_adaptive_polling and not args.clear:
+        polling_state.record_run(content_changed)
+        if content_changed:
+            print("📊 Adaptive polling: changes detected, reset backoff")
+        else:
+            print(f"📊 Adaptive polling: no changes, backoff increased")
 
     # Report results
     print("\n" + "=" * 60)
