@@ -341,13 +341,28 @@ def expand_repository_globs(patterns: List[str], downloader: GitHubActionsDownlo
 
 
 def aggregates_differ(new_aggregate: Dict, old_content: bytes) -> bool:
-    """Compare two aggregates, ignoring the updated_at timestamp"""
+    """Compare two aggregates, ignoring timestamp fields that always change"""
     try:
         old_aggregate = json.loads(old_content.decode('utf-8'))
 
-        # Create copies without the timestamp field
+        # Create copies without timestamp fields
         new_copy = {k: v for k, v in new_aggregate.items() if k != 'updated_at'}
         old_copy = {k: v for k, v in old_aggregate.items() if k != 'updated_at'}
+
+        # Also remove fetched_at from each repository (changes every run)
+        if 'repositories' in new_copy:
+            new_repos = []
+            for repo in new_copy['repositories']:
+                repo_copy = {k: v for k, v in repo.items() if k != 'fetched_at'}
+                new_repos.append(repo_copy)
+            new_copy['repositories'] = new_repos
+
+        if 'repositories' in old_copy:
+            old_repos = []
+            for repo in old_copy['repositories']:
+                repo_copy = {k: v for k, v in repo.items() if k != 'fetched_at'}
+                old_repos.append(repo_copy)
+            old_copy['repositories'] = old_repos
 
         # Compare the content
         return new_copy != old_copy
