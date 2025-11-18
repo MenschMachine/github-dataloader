@@ -7,8 +7,9 @@ github-actions-*.json
 run-*.json
 metadata-*.json
 agg-*.json
+current-state.json
 
-# State files
+# State files (no longer used, but keeping for cleanup)
 last_fetch_state.json
 
 # Python

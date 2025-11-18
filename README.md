@@ -1,17 +1,16 @@
 # GitHub Actions Data Downloader
 
-A Python script that downloads GitHub Actions workflow data from your repositories and uploads it to Cloudflare R2 storage.
+A Python script that downloads the last 20 workflow runs from your repositories and creates a current state aggregate file, optionally uploading it to Cloudflare R2 storage.
 
 ## Features
 
-- Download workflow runs, jobs, and artifacts from GitHub Actions
-- Incremental fetching (only new data since last run)
+- Fetches last 20 workflow runs per repository (configurable)
+- Always gets fresh data with current status (no caching)
 - Automatic retry logic with exponential backoff
 - Configurable repository list with glob pattern support
-- Saves data locally before uploading
+- Creates a single aggregate file with current state grouped by repository
 - Optional upload to Cloudflare R2 bucket
 - Local-only mode for downloading without cloud upload
-- Automatic time-based aggregations (daily, weekly, monthly, yearly)
 
 ## Prerequisites
 
@@ -217,69 +216,101 @@ python github_actions_downloader.py --local-only
 python github_actions_downloader.py --output-dir ./data
 ```
 
+### Fetch More/Fewer Runs
+
+```bash
+python github_actions_downloader.py --run-count 50
+```
+
+### Fetch Detailed Job and Artifact Info
+
+```bash
+python github_actions_downloader.py --fetch-details
+```
+
+By default, the script only fetches basic run information (status, conclusion, etc.) which is very fast (1 API call per repository).
+
+Use `--fetch-details` to also fetch jobs and artifacts for each run. This is much slower (2-3 additional API calls per run).
+
+**Performance comparison:**
+- Without `--fetch-details`: ~1 API call per repository
+- With `--fetch-details`: ~40-60 API calls per repository (for 20 runs)
+
+### Clear All Files from R2 Bucket
+
+```bash
+python github_actions_downloader.py --clear
+```
+
+This will:
+1. List all files in the R2 bucket
+2. Ask for confirmation ("yes")
+3. Delete all files from the bucket
+4. Exit without downloading anything
+
+**Warning:** This is a destructive operation and cannot be undone!
+
 ### Combine Options
 
 ```bash
-python github_actions_downloader.py --local-only --output-dir ./github-data
+python github_actions_downloader.py --local-only --output-dir ./github-data --run-count 30
 ```
 
 The script will:
 1. Read repositories from `config.json`
-2. Fetch workflow runs since the last fetch (or all data if first run)
+2. Fetch the last N workflow runs for each repository (default: 20)
 3. For each workflow run, fetch associated jobs and artifacts
-4. Save each workflow run to a separate file: `run-{repo}-{run_id}.json`
-5. Create a metadata file: `metadata-{timestamp}.json` that references all runs
-6. Upload all files to your R2 bucket under `{timestamp}/` (unless `--local-only` is specified)
-7. Update `last_fetch_state.json` for incremental fetching
+4. Create a single aggregate file: `current-state.json` with all data grouped by repository
+5. Upload the aggregate to your R2 bucket (unless `--local-only` is specified)
 
 ### Command-Line Options
 
 - `--local-only`: Save data locally only, skip uploading to R2. When this flag is used, R2 environment variables are not required.
-- `--output-dir <directory>`: Directory to save downloaded JSON files (default: current directory). The directory will be created if it doesn't exist.
+- `--output-dir <directory>`: Directory to save the aggregate file (default: current directory). The directory will be created if it doesn't exist.
+- `--run-count <number>`: Number of recent workflow runs to fetch per repository (default: 20).
+- `--fetch-details`: Fetch detailed job and artifact info for each run (default: off). Much slower but provides jobs_count and artifacts_count in the aggregate.
+- `--clear`: Delete all files from the R2 bucket and exit. Requires confirmation. Does not download any data.
 
 ## Data Structure
 
-### File Organization
+### Current State Aggregate
 
-The script creates multiple files per fetch:
+The script creates a single file: `current-state.json`
 
-1. **Individual workflow run files**: `run-{repository}-{run_id}.json`
-   - Contains complete data for a single workflow run
-   - Includes jobs and artifacts
-   - One file per workflow run
+This file contains:
+- Current state of all repositories
+- Last N workflow runs per repository
+- Run details including status, conclusion, jobs count, artifacts count
+- Grouped and organized by repository
 
-2. **Metadata file**: `metadata-{timestamp}.json`
-   - Index of all workflow runs in this fetch
-   - References individual run files
-   - Contains summary information
+### Aggregate File Format
 
-3. **Aggregation files**: `agg-{period_type}-{period}.json`
-   - Automatically generated for each time period
-   - Groups workflow runs by day, week, month, and year
-   - Examples: `agg-daily-2024-01-15.json`, `agg-monthly-2024-01.json`
-   - Makes it easy to query runs by time period
-
-### Metadata File Format
-
-`metadata-{timestamp}.json`:
+`current-state.json`:
 ```json
 {
-  "downloaded_at": "2024-01-01T12:00:00Z",
-  "timestamp": "20240101_120000",
+  "updated_at": "2025-11-17T10:00:00Z",
+  "repository_count": 5,
+  "total_runs": 100,
   "repositories": [
     {
-      "repository": "owner/repo",
-      "fetched_at": "2024-01-01T12:00:00Z",
-      "workflow_run_count": 5,
+      "name": "owner/repo1",
+      "fetched_at": "2025-11-17T10:00:00Z",
+      "run_count": 20,
       "workflow_runs": [
         {
           "run_id": 123456,
-          "filename": "run-owner-repo-123456.json",
           "name": "CI",
           "status": "completed",
           "conclusion": "success",
-          "created_at": "2024-01-01T10:00:00Z",
-          "updated_at": "2024-01-01T10:15:00Z"
+          "created_at": "2025-11-17T09:00:00Z",
+          "updated_at": "2025-11-17T09:15:00Z",
+          "head_branch": "main",
+          "head_sha": "abc1234",
+          "event": "push",
+          "run_number": 42,
+          "html_url": "https://github.com/owner/repo1/actions/runs/123456",
+          "jobs_count": 3,
+          "artifacts_count": 1
         }
       ]
     }
@@ -287,56 +318,34 @@ The script creates multiple files per fetch:
 }
 ```
 
-### Individual Run File Format
+## How it Works
 
-`run-{repository}-{run_id}.json`:
-```json
-{
-  "id": 123456,
-  "name": "CI",
-  "status": "completed",
-  "conclusion": "success",
-  "created_at": "2024-01-01T10:00:00Z",
-  "jobs": [...],
-  "artifacts": [...],
-  ... (all GitHub Actions workflow run data)
-}
+### Always Fresh Data
+
+Unlike traditional incremental fetching systems, this script:
+- **Always fetches the last N runs** (no time-based filtering)
+- **Re-downloads everything every time** (captures status updates)
+- **No state tracking or caching** (always reflects current reality)
+
+This means:
+- ✅ Captures in-progress builds that complete
+- ✅ Captures re-runs and their updated status
+- ✅ Captures status changes (queued → in_progress → completed)
+- ✅ Simple and predictable behavior
+- ✅ Perfect for hourly cron jobs
+
+### Use Case: Hourly Updates
+
+Run this script every hour via cron to:
+1. Get current status of all builds across all repos
+2. See which builds are in progress
+3. Track re-runs and their outcomes
+4. Monitor build health in real-time
+
+Example cron entry (runs every hour):
+```bash
+0 * * * * cd /path/to/github-dataloader && python github_actions_downloader.py
 ```
-
-### Aggregation File Format
-
-`agg-{period_type}-{period}.json`:
-```json
-{
-  "period_type": "daily",
-  "period": "2024-01-15",
-  "run_count": 12,
-  "workflow_runs": [
-    {
-      "repository": "owner/repo",
-      "run_id": 123456,
-      "filename": "run-owner-repo-123456.json",
-      "name": "CI",
-      "status": "completed",
-      "conclusion": "success",
-      "created_at": "2024-01-15T10:00:00Z",
-      "updated_at": "2024-01-15T10:15:00Z"
-    }
-  ]
-}
-```
-
-Aggregation types:
-- **Daily**: `agg-daily-YYYY-MM-DD.json` - Groups runs by day
-- **Weekly**: `agg-weekly-YYYY-Www.json` - Groups runs by week
-- **Monthly**: `agg-monthly-YYYY-MM.json` - Groups runs by month
-- **Yearly**: `agg-yearly-YYYY.json` - Groups runs by year
-
-## Incremental Fetching
-
-The script maintains state in `last_fetch_state.json` to track when each repository was last fetched. On subsequent runs, it only fetches data created after the last fetch time.
-
-To force a full re-fetch, delete `last_fetch_state.json`.
 
 ## Error Handling
 
@@ -347,10 +356,7 @@ To force a full re-fetch, delete `last_fetch_state.json`.
 
 ## Files Generated
 
-- `run-{repository}-{run_id}.json` - Individual workflow run data (one per run)
-- `metadata-{timestamp}.json` - Index file referencing all workflow runs
-- `agg-{period_type}-{period}.json` - Aggregation files grouped by time period
-- `last_fetch_state.json` - State for incremental fetching
+- `current-state.json` - Single aggregate file with current state of all repositories
 - `config.json` - Repository configuration (you create this)
 
 ## Security
@@ -360,10 +366,7 @@ To force a full re-fetch, delete `last_fetch_state.json`.
 The `.gitignore` file already protects:
 - `.env` (contains your credentials)
 - `config.json` (contains your repositories)
-- `run-*.json` (individual workflow run files)
-- `metadata-*.json` (metadata index files)
-- `agg-*.json` (aggregation files)
-- `last_fetch_state.json` (contains state)
+- `current-state.json` (contains workflow run data)
 
 The `.env.example` file is safe to commit as it only contains empty variable names.
 
@@ -372,6 +375,14 @@ The `.env.example` file is safe to commit as it only contains empty variable nam
 ### Rate Limiting
 
 GitHub API has a rate limit of 5000 requests/hour for authenticated users. The script includes delays to respect this limit.
+
+With 20 runs per repo and ~2 API calls per run (jobs + artifacts), you can process approximately:
+- ~100 repositories per hour
+
+If you have many repositories or need more runs per repo, consider:
+- Reducing `--run-count`
+- Running less frequently
+- Filtering repositories in config.json
 
 ### Authentication Errors
 
