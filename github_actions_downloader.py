@@ -9,7 +9,7 @@ import json
 import sys
 import argparse
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 import time
 import requests
 import boto3
@@ -188,6 +188,23 @@ class CloudflareR2Uploader:
                     raise
         return False
 
+    def object_exists(self, object_name: str) -> bool:
+        """Check if an object exists in R2"""
+        try:
+            self.s3_client.head_object(Bucket=self.bucket_name, Key=object_name)
+            return True
+        except Exception:
+            return False
+
+    def download_object(self, object_name: str) -> Optional[bytes]:
+        """Download an object from R2 and return its content"""
+        try:
+            response = self.s3_client.get_object(Bucket=self.bucket_name, Key=object_name)
+            return response['Body'].read()
+        except Exception as e:
+            print(f"Failed to download {object_name}: {e}")
+            return None
+
     def list_all_objects(self) -> List[str]:
         """List all objects in the R2 bucket"""
         objects = []
@@ -323,7 +340,24 @@ def expand_repository_globs(patterns: List[str], downloader: GitHubActionsDownlo
     return expanded_repos
 
 
-def create_current_state_aggregate(all_repo_data: List[Dict], output_dir: Path) -> str:
+def aggregates_differ(new_aggregate: Dict, old_content: bytes) -> bool:
+    """Compare two aggregates, ignoring the updated_at timestamp"""
+    try:
+        old_aggregate = json.loads(old_content.decode('utf-8'))
+
+        # Create copies without the timestamp field
+        new_copy = {k: v for k, v in new_aggregate.items() if k != 'updated_at'}
+        old_copy = {k: v for k, v in old_aggregate.items() if k != 'updated_at'}
+
+        # Compare the content
+        return new_copy != old_copy
+    except Exception as e:
+        print(f"Error comparing aggregates: {e}")
+        # If we can't compare, assume they differ (safer to upload)
+        return True
+
+
+def create_current_state_aggregate(all_repo_data: List[Dict], output_dir: Path) -> Tuple[str, Dict]:
     """Create a single aggregate file with current state of all repositories"""
     print("\nCreating current state aggregate...")
 
@@ -373,7 +407,7 @@ def create_current_state_aggregate(all_repo_data: List[Dict], output_dir: Path) 
     print(f"  - {aggregate['total_runs']} total workflow runs")
     print(f"  - File: {agg_file.name}")
 
-    return str(agg_file)
+    return str(agg_file), aggregate
 
 
 def main():
@@ -529,17 +563,38 @@ def main():
         sys.exit(1)
 
     # Create current state aggregate
-    aggregate_file = create_current_state_aggregate(all_repo_data, output_dir)
+    aggregate_file, aggregate_data = create_current_state_aggregate(all_repo_data, output_dir)
 
     # Upload aggregate file to R2
     if uploader:
-        print(f"\nUploading current state aggregate to R2...")
-        try:
-            uploader.upload_file(aggregate_file, 'current-state.json')
-            print(f"✓ Successfully uploaded current-state.json to R2")
-        except Exception as e:
-            print(f"✗ Failed to upload: {e}")
-            sys.exit(1)
+        print(f"\nChecking if upload is needed...")
+
+        # Check if file exists in R2 and compare content
+        should_upload = True
+        if uploader.object_exists('current-state.json'):
+            print("Existing current-state.json found in R2, comparing...")
+            old_content = uploader.download_object('current-state.json')
+
+            if old_content:
+                if aggregates_differ(aggregate_data, old_content):
+                    print("Content has changed, upload needed")
+                    should_upload = True
+                else:
+                    print("Content unchanged, skipping upload")
+                    should_upload = False
+        else:
+            print("No existing file in R2, upload needed")
+
+        if should_upload:
+            print(f"\nUploading current state aggregate to R2...")
+            try:
+                uploader.upload_file(aggregate_file, 'current-state.json')
+                print(f"✓ Successfully uploaded current-state.json to R2")
+            except Exception as e:
+                print(f"✗ Failed to upload: {e}")
+                sys.exit(1)
+        else:
+            print(f"✓ No upload needed - current-state.json is up to date")
 
     # Report results
     print("\n" + "=" * 60)
