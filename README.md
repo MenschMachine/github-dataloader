@@ -362,7 +362,11 @@ The script includes **intelligent backoff** that automatically adjusts polling f
 - **0 unchanged runs**: Poll every 1 minute (fast)
 - **1 unchanged run**: Poll every 2 minutes
 - **2 unchanged runs**: Poll every 5 minutes
-- **3+ unchanged runs**: Poll every 10 minutes (max)
+- **3 unchanged runs**: Poll every 10 minutes
+- **4 unchanged runs**: Poll every 20 minutes
+- **5+ unchanged runs**: Poll every 30 minutes (max)
+
+**Daily reset:** At 7am UTC each day, the backoff automatically resets regardless of unchanged count. This ensures fresh data every morning.
 
 **Setup:**
 ```bash

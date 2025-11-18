@@ -407,16 +407,26 @@ class AdaptivePollingState:
         now = datetime.now(timezone.utc)
         elapsed_seconds = (now - last_run).total_seconds()
 
+        # Check if we should reset due to daily 7am UTC reset
+        # If it's past 7am today and last run was before 7am today (or yesterday)
+        today_7am = now.replace(hour=7, minute=0, second=0, microsecond=0)
+        if now >= today_7am and last_run < today_7am:
+            return True, "Daily 7am reset - ready to run"
+
         # Backoff intervals based on consecutive unchanged runs
         unchanged = self.state['consecutive_unchanged']
         if unchanged == 0:
-            interval = 60  # 1 minute
+            interval = 60     # 1 minute
         elif unchanged == 1:
-            interval = 120  # 2 minutes
+            interval = 120    # 2 minutes
         elif unchanged == 2:
-            interval = 300  # 5 minutes
-        else:
-            interval = 600  # 10 minutes
+            interval = 300    # 5 minutes
+        elif unchanged == 3:
+            interval = 600    # 10 minutes
+        elif unchanged == 4:
+            interval = 1200   # 20 minutes
+        else:  # 5+
+            interval = 1800   # 30 minutes
 
         if elapsed_seconds < interval:
             wait_time = int(interval - elapsed_seconds)
