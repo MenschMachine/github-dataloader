@@ -152,6 +152,11 @@ R2_ACCESS_KEY_ID=your_r2_access_key_id
 R2_SECRET_ACCESS_KEY=your_r2_secret_access_key
 R2_ACCOUNT_ID=your_cloudflare_account_id
 R2_BUCKET_NAME=your_r2_bucket_name
+
+# Optional: Cloudflare cache purging (only if using CDN)
+CF_ZONE_ID=your_zone_id
+CF_API_TOKEN=your_api_token_with_cache_purge_permission
+CF_PUBLIC_URL=https://data.example.com
 ```
 
 **Option 2: Export in shell**
@@ -167,6 +172,13 @@ export R2_ACCESS_KEY_ID="your_r2_access_key_id"
 export R2_SECRET_ACCESS_KEY="your_r2_secret_access_key"
 export R2_ACCOUNT_ID="your_cloudflare_account_id"
 export R2_BUCKET_NAME="your_r2_bucket_name"
+```
+
+**Optional: Cloudflare cache purging (only if serving R2 via Cloudflare CDN):**
+```bash
+export CF_ZONE_ID="your_zone_id"
+export CF_API_TOKEN="your_api_token"
+export CF_PUBLIC_URL="https://data.example.com"
 ```
 
 ### GitHub Token
@@ -195,6 +207,35 @@ Required scopes:
 5. Note your Account ID from the R2 overview page → Use for `R2_ACCOUNT_ID`
 
 The script uses boto3's S3-compatible interface, which requires R2 Access Keys, not general Cloudflare API tokens.
+
+### Cloudflare Cache Purging (Optional)
+
+If you serve your R2 content through Cloudflare's CDN, you can enable automatic cache purging after uploads. This ensures users always get the freshest data without waiting for cache expiration.
+
+**Setup:**
+
+1. **Find your Zone ID**:
+   - Go to your domain in Cloudflare Dashboard
+   - Scroll down to find "Zone ID" on the right sidebar
+   - Copy it → Use for `CF_ZONE_ID`
+
+2. **Create API Token with Cache Purge permission**:
+   - Go to: https://dash.cloudflare.com/profile/api-tokens
+   - Click "Create Token"
+   - Use the "Create Custom Token" template
+   - Set permissions:
+     - Zone → Cache Purge → Purge
+   - Set zone resources to include your domain
+   - Create token and copy it → Use for `CF_API_TOKEN`
+
+3. **Set your public CDN URL**:
+   - This is the public URL where your R2 bucket is accessible via Cloudflare
+   - Example: `https://data.example.com` → Use for `CF_PUBLIC_URL`
+
+**How it works:**
+- After each successful R2 upload, the script automatically purges the Cloudflare cache for the uploaded file
+- If cache purging is not configured (variables not set), it silently skips this step
+- The R2 upload will succeed regardless of cache purge status
 
 ## Usage
 

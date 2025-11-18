@@ -151,8 +151,14 @@ class CloudflareR2Uploader:
     """Handles uploading to Cloudflare R2"""
 
     def __init__(self, access_key_id: str, secret_access_key: str,
-                 account_id: str, bucket_name: str):
+                 account_id: str, bucket_name: str,
+                 cf_zone_id: Optional[str] = None,
+                 cf_api_token: Optional[str] = None,
+                 cf_public_url: Optional[str] = None):
         self.bucket_name = bucket_name
+        self.cf_zone_id = cf_zone_id
+        self.cf_api_token = cf_api_token
+        self.cf_public_url = cf_public_url
 
         # Cloudflare R2 endpoint
         endpoint_url = f"https://{account_id}.r2.cloudflarestorage.com"
@@ -250,6 +256,45 @@ class CloudflareR2Uploader:
             print(f"Failed to delete {failed_count} object(s)")
 
         return deleted_count
+
+    def purge_cache(self, file_name: str) -> bool:
+        """Purge Cloudflare cache for the uploaded file"""
+        if not self.cf_zone_id or not self.cf_api_token or not self.cf_public_url:
+            # Cache purging not configured, silently skip
+            return False
+
+        # Construct the full URL to purge
+        url = f"{self.cf_public_url.rstrip('/')}/{file_name}"
+
+        print(f"Purging Cloudflare cache for: {url}")
+
+        headers = {
+            'Authorization': f'Bearer {self.cf_api_token}',
+            'Content-Type': 'application/json'
+        }
+
+        # Cloudflare Cache Purge API
+        purge_url = f'https://api.cloudflare.com/client/v4/zones/{self.cf_zone_id}/purge_cache'
+
+        payload = {
+            'files': [url]
+        }
+
+        try:
+            response = requests.post(purge_url, headers=headers, json=payload)
+            response.raise_for_status()
+            result = response.json()
+
+            if result.get('success'):
+                print(f"✓ Cache purged successfully for {file_name}")
+                return True
+            else:
+                errors = result.get('errors', [])
+                print(f"✗ Cache purge failed: {errors}")
+                return False
+        except Exception as e:
+            print(f"✗ Cache purge failed: {e}")
+            return False
 
 
 def load_config(config_file: str = 'config.json') -> Dict:
@@ -593,6 +638,11 @@ def main():
     r2_account_id = os.getenv('R2_ACCOUNT_ID')
     r2_bucket_name = os.getenv('R2_BUCKET_NAME')
 
+    # Optional: Cloudflare cache purging (only needed if using CDN)
+    cf_zone_id = os.getenv('CF_ZONE_ID')
+    cf_api_token = os.getenv('CF_API_TOKEN')
+    cf_public_url = os.getenv('CF_PUBLIC_URL')
+
     # Validate environment variables
     missing_vars = []
 
@@ -631,7 +681,8 @@ def main():
 
         print()
         uploader = CloudflareR2Uploader(r2_access_key, r2_secret_key,
-                                         r2_account_id, r2_bucket_name)
+                                         r2_account_id, r2_bucket_name,
+                                         cf_zone_id, cf_api_token, cf_public_url)
         deleted_count = uploader.delete_all_objects()
 
         print("\n" + "=" * 60)
@@ -667,7 +718,8 @@ def main():
     uploader = None
     if not args.local_only:
         uploader = CloudflareR2Uploader(r2_access_key, r2_secret_key,
-                                         r2_account_id, r2_bucket_name)
+                                         r2_account_id, r2_bucket_name,
+                                         cf_zone_id, cf_api_token, cf_public_url)
 
     # Download data for each repository
     all_repo_data = []
@@ -716,6 +768,9 @@ def main():
             try:
                 uploader.upload_file(aggregate_file, 'current-state.json')
                 print(f"✓ Successfully uploaded current-state.json to R2")
+
+                # Purge Cloudflare cache if configured
+                uploader.purge_cache('current-state.json')
             except Exception as e:
                 print(f"✗ Failed to upload: {e}")
                 sys.exit(1)
